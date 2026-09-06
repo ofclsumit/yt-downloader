@@ -694,7 +694,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.0.7",
+        "version": "1.0.8",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
@@ -738,6 +738,48 @@ def api_test_clients(url: str = "https://www.youtube.com/watch?v=aqz-KE-bpKQ"):
         except Exception as e:
             results[name] = {"success": False, "error": str(e)[:150]}
     return results
+
+
+@app.get("/api/debug/test-cookies")
+def api_test_cookies(url: str = "https://www.youtube.com/watch?v=aqz-KE-bpKQ"):
+    cookie_exists = os.path.exists(COOKIES_FILE)
+    cookie_size = os.path.getsize(COOKIES_FILE) if cookie_exists else 0
+    first_line = ""
+    if cookie_exists:
+        try:
+            with open(COOKIES_FILE, "r", encoding="utf-8") as f:
+                first_line = f.readline().strip()
+        except Exception as e:
+            first_line = f"Error reading: {e}"
+
+    # Test extraction with cookies directly
+    ydl_opts = get_ytdlp_opts({
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'extract_flat': False,
+    })
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            formats = [f for f in info.get("formats", []) if f.get("vcodec") != "none"]
+            return {
+                "success": True,
+                "title": info.get("title"),
+                "cookie_file_exists": cookie_exists,
+                "cookie_size_bytes": cookie_size,
+                "first_line_preview": first_line[:50],
+                "formats_count": len(formats),
+                "resolutions": sorted(list(set([f.get("height") for f in formats if f.get("height")])))
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "cookie_file_exists": cookie_exists,
+            "cookie_size_bytes": cookie_size,
+            "first_line_preview": first_line[:50]
+        }
 
 
 @app.post("/api/analyze")
