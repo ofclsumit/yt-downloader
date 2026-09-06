@@ -61,6 +61,27 @@ YTDLP_BASE_OPTS = {
 PROXY_ENV = os.environ.get("YTDLP_PROXIES") or os.environ.get("YTDLP_PROXY") or ""
 PROXIES_FILE = os.path.join(BASE_DIR, "proxies.txt")
 
+COOKIES_ENV = os.environ.get("YTDLP_COOKIES", "").strip()
+COOKIES_FILE = os.path.join(BASE_DIR, "cookies.txt")
+if COOKIES_ENV and not os.path.exists(COOKIES_FILE):
+    try:
+        import base64
+        # Support both raw cookies string and base64-encoded string
+        decoded = None
+        try:
+            decoded = base64.b64decode(COOKIES_ENV).decode("utf-8")
+            if "# Netscape" not in decoded and "\t" not in decoded:
+                decoded = None
+        except Exception:
+            decoded = None
+        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+            f.write(decoded if decoded else COOKIES_ENV)
+        print("[Cookies] Loaded cookies from YTDLP_COOKIES environment variable")
+    except Exception as e:
+        print(f"[Cookies Init] Failed to write cookies.txt: {e}")
+
+PO_TOKEN_ENV = os.environ.get("YTDLP_PO_TOKEN", "").strip()
+
 def get_rotating_proxy() -> Optional[str]:
     """
     Selects a rotating proxy from YTDLP_PROXIES env var or proxies.txt file.
@@ -81,11 +102,16 @@ def get_rotating_proxy() -> Optional[str]:
     return None
 
 def get_ytdlp_opts(custom_opts: dict = None) -> dict:
-    """Builds yt-dlp options dictionary with rotating residential proxy if configured."""
-    opts = dict(YTDLP_BASE_OPTS)
+    """Builds yt-dlp options dictionary with rotating residential proxy or cookies if configured."""
+    import copy
+    opts = copy.deepcopy(YTDLP_BASE_OPTS)
     proxy = get_rotating_proxy()
     if proxy:
         opts["proxy"] = proxy
+    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
+        opts["cookiefile"] = COOKIES_FILE
+    if PO_TOKEN_ENV:
+        opts.setdefault("extractor_args", {}).setdefault("youtube", {})["po_token"] = [f"web+{PO_TOKEN_ENV}"]
     if custom_opts:
         opts.update(custom_opts)
     return opts
@@ -668,8 +694,10 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.0.3",
+        "version": "1.0.4",
         "engine": "youtube.py",
+        "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
+        "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
         "ffmpeg": FFMPEG_EXE,
         "ffmpeg_available": os.path.exists(FFMPEG_EXE) if os.path.isabs(FFMPEG_EXE) else True,
         "active_jobs": len([j for j in jobs.values() if j.get("status") in ["queued", "processing"]]),
