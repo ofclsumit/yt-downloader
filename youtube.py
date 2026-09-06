@@ -102,17 +102,19 @@ def get_rotating_proxy() -> Optional[str]:
         return random.choice(proxies)
     return None
 
-def get_ytdlp_opts(custom_opts: dict = None, use_cookies: bool = False) -> dict:
-    """Builds yt-dlp options dictionary with proxy. Injects cookies only when explicitly requested."""
+def get_ytdlp_opts(custom_opts: dict = None, use_cookies: bool = False, proxy: str = None) -> dict:
+    """Builds yt-dlp options dictionary with proxy. Injects cookies only when explicitly requested.
+    If `proxy` is explicitly provided, that specific proxy is used (for sticky session support).
+    Otherwise, a random proxy is selected."""
     import copy
     opts = copy.deepcopy(YTDLP_BASE_OPTS)
-    proxy = get_rotating_proxy()
-    if proxy:
-        opts["proxy"] = proxy
-        os.environ["http_proxy"] = proxy
-        os.environ["https_proxy"] = proxy
-        os.environ["HTTP_PROXY"] = proxy
-        os.environ["HTTPS_PROXY"] = proxy
+    selected_proxy = proxy if proxy is not None else get_rotating_proxy()
+    if selected_proxy:
+        opts["proxy"] = selected_proxy
+        os.environ["http_proxy"] = selected_proxy
+        os.environ["https_proxy"] = selected_proxy
+        os.environ["HTTP_PROXY"] = selected_proxy
+        os.environ["HTTPS_PROXY"] = selected_proxy
     if FFMPEG_EXE and (os.path.isabs(FFMPEG_EXE) or shutil.which(FFMPEG_EXE)):
         opts["ffmpeg_location"] = FFMPEG_EXE
     if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
@@ -701,7 +703,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.1.9",
+        "version": "1.2.0",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
@@ -1099,7 +1101,11 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
             job["progress"] = 10
             job["step"] = "Worker slot allocated. Preparing download..."
 
-            # Extract info with rotating proxy if enabled
+            # Pin a single proxy for this entire job to ensure the same IP is used
+            # for both metadata extraction and media download (prevents YouTube CDN 403s)
+            job_proxy = get_rotating_proxy()
+
+            # Extract info with pinned proxy for session IP consistency
             title = req_data.get("title")
             if not title:
                 ydl_info_opts = get_ytdlp_opts({
@@ -1107,7 +1113,7 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                     'skip_download': True,
                     'quiet': True,
                     'no_warnings': True,
-                })
+                }, proxy=job_proxy)
                 if FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
                     ydl_info_opts['ffmpeg_location'] = FFMPEG_EXE
 
@@ -1169,7 +1175,7 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                 'merge_output_format': 'mp4' if (not is_audio and not use_section_download) else None,
                 'postprocessors': postprocessors if not use_section_download else [],
                 'progress_hooks': [ydl_progress_hook],
-            })
+            }, proxy=job_proxy)
             if ffmpeg_dir and os.path.exists(ffmpeg_dir):
                 ydl_opts['ffmpeg_location'] = ffmpeg_dir
             elif FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
@@ -1203,7 +1209,7 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                 print(f"[Download Error] Initial download failed: {full_dl_err}. Falling back to direct segment cutting...")
                 if use_section_download:
                     try:
-                        ydl_info_opts = get_ytdlp_opts({'extract_flat': False, 'skip_download': True, 'quiet': True, 'no_warnings': True})
+                        ydl_info_opts = get_ytdlp_opts({'extract_flat': False, 'skip_download': True, 'quiet': True, 'no_warnings': True}, proxy=job_proxy)
                         with yt_dlp.YoutubeDL(ydl_info_opts) as ydl_info:
                             v_info = ydl_info.extract_info(url, download=False)
                         fmts = v_info.get('formats', [])

@@ -78,6 +78,7 @@ function AppContent() {
   const lastActivityRef = React.useRef(Date.now());
   const analysisAbortRef = React.useRef(null);
   const analysisReqIdRef = React.useRef(0);
+  const fetchVideoAnalysisRef = React.useRef(null);
 
   // Playback & UI States
   const [isPlayerReady, setIsPlayerReady] = useState(false);
@@ -224,6 +225,9 @@ function AppContent() {
     }
   }, [sessionId, videoMetadata, videoDuration]);
 
+  // Keep ref in sync so useEffect can call latest version without dependency loop
+  fetchVideoAnalysisRef.current = fetchVideoAnalysis;
+
   // Safe retry handler: prevents duplicate simultaneous requests while active (Requirement 16)
   const handleRetryQualities = useCallback(() => {
     if (isLoadingQualities) return;
@@ -268,7 +272,10 @@ function AppContent() {
         }
 
         if (sess.videoUrl && sess.videoId) {
-          fetchVideoAnalysis(sess.videoUrl);
+          // Use ref to avoid stale closure & prevent dependency loop; .catch() prevents unhandled AbortError
+          if (fetchVideoAnalysisRef.current) {
+            Promise.resolve(fetchVideoAnalysisRef.current(sess.videoUrl)).catch(() => {});
+          }
         }
       } else if (res.status === 'expired') {
         setSessionState('expired');
@@ -283,7 +290,7 @@ function AppContent() {
     return () => {
       isMounted = false;
     };
-  }, [activeSessionId, path, fetchVideoAnalysis]);
+  }, [activeSessionId, path]); // fetchVideoAnalysis accessed via ref to avoid re-render loops
 
   const validation = useMemo(() => {
     return validateTimeRange(startTime, endTime, videoDuration);
