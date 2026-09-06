@@ -5,6 +5,14 @@
   "framework": "vite",
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "https://yt-downloader-pmj0.onrender.com/api/$1"
+    },
+    {
+      "source": "/preview-media/(.*)",
+      "destination": "https://yt-downloader-pmj0.onrender.com/preview-media/$1"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

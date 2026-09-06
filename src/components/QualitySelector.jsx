@@ -153,7 +153,7 @@ export default function QualitySelector({
     );
   }
 
-  // 2. Error State
+  // 2. Error State (Requirement 15: display accurate error message, not generic fallback)
   if (error) {
     return (
       <div className="quality-selector-container" role="alert">
@@ -167,11 +167,47 @@ export default function QualitySelector({
               <line x1="12" y1="8" x2="12" y2="12" />
               <line x1="12" y1="16" x2="12.01" y2="16" />
             </svg>
-            <span>Unable to load available qualities.</span>
+            <span>{typeof error === 'string' ? error : 'Unable to analyze video qualities.'}</span>
           </div>
           {onRetry && (
-            <button type="button" className="quality-retry-btn" onClick={onRetry}>
-              Retry
+            <button
+              type="button"
+              className="quality-retry-btn"
+              onClick={onRetry}
+              disabled={isLoading}
+            >
+              {isLoading ? 'Retrying...' : 'Retry'}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // 2b. Empty Qualities State (no error, but extraction returned 0 downloadable formats)
+  if (!availableQualities || availableQualities.length === 0) {
+    return (
+      <div className="quality-selector-container" role="alert">
+        <div className="quality-header-row">
+          <label className="quality-field-label">Quality &amp; Format:</label>
+        </div>
+        <div className="quality-error-box">
+          <div className="quality-error-content">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <span>No compatible video qualities were found.</span>
+          </div>
+          {onRetry && (
+            <button
+              type="button"
+              className="quality-retry-btn"
+              onClick={onRetry}
+              disabled={isLoading}
+            >
+              {isLoading ? 'Retrying...' : 'Retry'}
             </button>
           )}
         </div>

@@ -76,6 +76,8 @@ function AppContent() {
   const [sessionId, setSessionId] = useState(null);
   const [idleRemaining, setIdleRemaining] = useState(300);
   const lastActivityRef = React.useRef(Date.now());
+  const analysisAbortRef = React.useRef(null);
+  const analysisReqIdRef = React.useRef(0);
 
   // Playback & UI States
   const [isPlayerReady, setIsPlayerReady] = useState(false);
@@ -145,23 +147,44 @@ function AppContent() {
     }
   }, [path, pageData]);
 
-  // Analyze metadata and category using backend
+  // Analyze metadata and category using backend (Robust with cancellation, race-condition immunity, and zero fake qualities)
   const fetchVideoAnalysis = useCallback(async (urlToAnalyze) => {
+    if (!urlToAnalyze) return;
+
+    // Cancel any previous in-flight analysis request (Requirement 17)
+    if (analysisAbortRef.current) {
+      analysisAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
+    const currentReqId = ++analysisReqIdRef.current;
+
     setIsLoadingQualities(true);
     setQualityError(null);
+
     try {
       const res = await fetch(apiUrl('/api/analyze'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: urlToAnalyze }),
+        body: JSON.stringify({ url: urlToAnalyze, sessionId }),
+        signal: controller.signal,
       });
+
+      // Ignore stale responses if a newer request was dispatched (Requirement 18)
+      if (currentReqId !== analysisReqIdRef.current) return;
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
+        if (res.status === 410) {
+          setSessionState('expired');
+          throw new Error('This video session has expired.');
+        }
         throw new Error(err.detail || 'Could not inspect video stream qualities.');
       }
 
       const data = await res.json();
+      if (currentReqId !== analysisReqIdRef.current) return;
+
       if (data.category) {
         setVideoCategory(data.category);
       }
@@ -177,34 +200,37 @@ function AppContent() {
         setEndTime(Math.min(data.duration, 60));
       }
 
+      // Populate ONLY real extraction results (Requirement 29: NEVER use fake quality options)
       if (data.qualities && Array.isArray(data.qualities) && data.qualities.length > 0) {
         setAvailableQualities(data.qualities);
         setSelectedQuality(data.defaultQuality || data.qualities[0].id);
+        setQualityError(null);
       } else {
-        setAvailableQualities([
-          { id: '1080', label: '1080p', desc: 'Full HD', badge: 'HD', ext: 'mp4' },
-          { id: '720', label: '720p', desc: 'Standard HD', badge: 'HD', ext: 'mp4' },
-          { id: 'mp3', label: 'MP3 Audio', desc: 'Audio Track', badge: 'Audio', ext: 'mp3' },
-        ]);
+        setAvailableQualities([]);
+        setQualityError('No compatible video qualities were found.');
       }
     } catch (err) {
-      console.warn('Format analysis warning:', err.message);
-      setQualityError(err.message);
-      setAvailableQualities([
-        { id: '1080', label: '1080p', desc: 'Full HD (Default)', badge: 'HD', ext: 'mp4' },
-        { id: '720', label: '720p', desc: 'Standard HD', badge: 'HD', ext: 'mp4' },
-        { id: 'mp3', label: 'MP3 Audio', desc: 'High Quality Audio', badge: 'Audio', ext: 'mp3' },
-      ]);
-    } finally {
-      setIsLoadingQualities(false);
-    }
-  }, [videoMetadata, videoDuration]);
+      // Ignore deliberate user cancellations
+      if (err.name === 'AbortError') return;
+      if (currentReqId !== analysisReqIdRef.current) return;
 
+      console.warn('Format analysis warning:', err.message);
+      setQualityError(err.message || 'Unable to analyze this video. Please try again.');
+      setAvailableQualities([]); // Never hardcode fake fallback qualities!
+    } finally {
+      if (currentReqId === analysisReqIdRef.current) {
+        setIsLoadingQualities(false);
+      }
+    }
+  }, [sessionId, videoMetadata, videoDuration]);
+
+  // Safe retry handler: prevents duplicate simultaneous requests while active (Requirement 16)
   const handleRetryQualities = useCallback(() => {
+    if (isLoadingQualities) return;
     if (videoUrl) {
       fetchVideoAnalysis(videoUrl);
     }
-  }, [videoUrl, fetchVideoAnalysis]);
+  }, [videoUrl, isLoadingQualities, fetchVideoAnalysis]);
 
   // Revalidate or restore session whenever activeSessionId changes
   useEffect(() => {

@@ -42,6 +42,13 @@ else:
 
 NODE_BIN = shutil.which('node') or r"C:\Program Files\nodejs\node.exe"
 YTDLP_BASE_OPTS = {
+    'quiet': True,
+    'no_warnings': True,
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['visionos', 'mweb', 'android'],
+        }
+    },
     'js_runtimes': {'node': {'path': NODE_BIN}} if (NODE_BIN and os.path.exists(NODE_BIN)) else {},
 }
 
@@ -675,6 +682,13 @@ def api_analyze(req: AnalyzeRequest):
     if not url:
         raise HTTPException(status_code=400, detail="URL cannot be empty")
 
+    # If sessionId provided, validate session
+    if req.sessionId:
+        with SESSION_LOCK:
+            sess = sessions.get(req.sessionId)
+            if sess and sess.get("status") == "expired":
+                raise HTTPException(status_code=410, detail="This video session has expired.")
+
     # Detect if user entered a channel URL
     channel_pattern = re.compile(r'(youtube\.com/(c/|channel/|user/|@)|youtu\.be/)', re.IGNORECASE)
     is_channel = bool(re.search(r'youtube\.com/(c/|channel/|user/|@[\w.-]+)', url, re.IGNORECASE))
@@ -710,22 +724,39 @@ def api_analyze(req: AnalyzeRequest):
             # Discover available resolutions dynamically from real formats
             formats = info.get('formats', [])
             best_audio_size = 0
+            best_audio_format_id = None
             has_audio = False
             for f in formats:
-                if f.get('acodec') and f.get('acodec') != 'none':
+                # Filter out storyboard images (sb1, sb2, mhtml)
+                if f.get('protocol') == 'mhtml' or f.get('ext') == 'mhtml':
+                    continue
+                if 'storyboard' in (f.get('format_note') or '').lower():
+                    continue
+
+                acodec = f.get('acodec')
+                if acodec and acodec != 'none':
                     has_audio = True
-                if f.get('vcodec') == 'none' and f.get('acodec') and f.get('acodec') != 'none':
                     sz = f.get('filesize') or f.get('filesize_approx') or 0
                     if sz > best_audio_size:
                         best_audio_size = sz
+                        best_audio_format_id = f.get('format_id')
+                    elif not best_audio_format_id:
+                        best_audio_format_id = f.get('format_id')
 
             # Map resolutions dynamically based on real formats
             res_map = {}
             for f in formats:
-                if f.get('vcodec') and f.get('vcodec') != 'none':
+                # Filter out storyboard images
+                if f.get('protocol') == 'mhtml' or f.get('ext') == 'mhtml':
+                    continue
+                if 'storyboard' in (f.get('format_note') or '').lower():
+                    continue
+
+                vcodec = f.get('vcodec')
+                if vcodec and vcodec != 'none':
                     w = f.get('width')
                     h = f.get('height')
-                    # Support portrait/Shorts by taking minimum dimension
+                    # Support portrait/Shorts by taking minimum dimension (e.g. 1080x1920 is 1080p, not 1920p)
                     if w and h:
                         res = min(w, h)
                     elif h:
@@ -734,23 +765,24 @@ def api_analyze(req: AnalyzeRequest):
                         res = w
                     else:
                         continue
-                    if isinstance(res, int) and res > 0:
+                    if isinstance(res, int) and res >= 144:
                         res_map.setdefault(res, []).append(f)
 
             sorted_res = sorted(res_map.keys(), reverse=True)
             quality_options = []
 
-            # Add "Best Available" option
-            quality_options.append({
-                "id": "best",
-                "label": "Best Available",
-                "res": sorted_res[0] if sorted_res else None,
-                "desc": f"Optimal quality ({sorted_res[0]}p)" if sorted_res else "Optimal quality",
-                "badge": "Auto",
-                "ext": "mp4",
-                "isAudio": False,
-                "fileSizeMb": None
-            })
+            # If formats found, add "Best Available" option
+            if sorted_res:
+                quality_options.append({
+                    "id": "best",
+                    "label": "Best Available",
+                    "res": sorted_res[0],
+                    "desc": f"Optimal quality ({sorted_res[0]}p)",
+                    "badge": "Auto",
+                    "ext": "mp4",
+                    "isAudio": False,
+                    "fileSizeMb": None
+                })
 
             label_map = {
                 2160: ("2160p", "4K", "Ultra HD"),
@@ -763,7 +795,7 @@ def api_analyze(req: AnalyzeRequest):
                 144: ("144p", "Low", "144p"),
             }
 
-            # Choose default: 1080p if available, else the top resolution
+            # Choose default: 1080p if available, else top available resolution, or 'best'
             default_res = 1080 if 1080 in sorted_res else (sorted_res[0] if sorted_res else "best")
             default_quality_id = str(default_res)
 
@@ -775,6 +807,8 @@ def api_analyze(req: AnalyzeRequest):
                     s = f.get('filesize') or f.get('filesize_approx') or 0
                     if s > max_s:
                         max_s = s
+                        best_f = f
+                    elif max_s == 0 and f.get('ext') == 'mp4':
                         best_f = f
 
                 tot_size = max_s
@@ -803,6 +837,8 @@ def api_analyze(req: AnalyzeRequest):
                     "codec": codec_clean,
                     "fileSizeMb": size_mb,
                     "isAudio": False,
+                    "videoFormatId": best_f.get('format_id'),
+                    "audioFormatId": best_audio_format_id,
                     "isDefault": str(res) == default_quality_id
                 })
 
@@ -817,8 +853,12 @@ def api_analyze(req: AnalyzeRequest):
                     "codec": "MP3",
                     "fileSizeMb": audio_mb,
                     "isAudio": True,
+                    "audioFormatId": best_audio_format_id,
                     "isDefault": False
                 })
+
+            if not quality_options:
+                raise HTTPException(status_code=422, detail="No compatible video qualities were found.")
 
             return {
                 "isChannel": False,
@@ -832,8 +872,22 @@ def api_analyze(req: AnalyzeRequest):
                 "qualities": quality_options,
                 "url": url
             }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to analyze video: {str(e)}")
+        err_str = str(e)
+        print(f"[Analyze Error] {err_str}")
+        if "unavailable" in err_str.lower() or "private" in err_str.lower():
+            detail = "This video is unavailable or private."
+        elif "unsupported" in err_str.lower() or "not a valid url" in err_str.lower():
+            detail = "This video URL is not supported."
+        elif "too many requests" in err_str.lower() or "rate" in err_str.lower() or "429" in err_str:
+            detail = "Too many requests. Please try again shortly."
+        elif "no formats" in err_str.lower():
+            detail = "No compatible video qualities were found."
+        else:
+            detail = "Unable to analyze this video. Please try again."
+        raise HTTPException(status_code=400, detail=detail)
 
 
 def process_download_job(job_id: str, req_data: Dict[str, Any]):
