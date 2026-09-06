@@ -701,7 +701,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.1.4",
+        "version": "1.1.5",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
@@ -1098,13 +1098,14 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                 except Exception:
                     ydl_format = 'bestvideo+bestaudio/best'
 
+            use_section_download = is_clip and end_time > start_time
             temp_video_pattern = os.path.join(TEMP_PATH, f"{job_id}_raw.%(ext)s")
             ffmpeg_dir = os.path.dirname(FFMPEG_EXE) if FFMPEG_EXE and os.path.isabs(FFMPEG_EXE) else None
             ydl_opts = get_ytdlp_opts({
                 'format': ydl_format,
                 'outtmpl': temp_video_pattern,
-                'merge_output_format': 'mp4' if not is_audio else None,
-                'postprocessors': postprocessors,
+                'merge_output_format': 'mp4' if (not is_audio and not use_section_download) else None,
+                'postprocessors': postprocessors if not use_section_download else [],
                 'progress_hooks': [ydl_progress_hook],
             })
             if ffmpeg_dir and os.path.exists(ffmpeg_dir):
@@ -1112,7 +1113,6 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
             elif FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
                 ydl_opts['ffmpeg_location'] = FFMPEG_EXE
 
-            use_section_download = is_clip and end_time > start_time
             if use_section_download:
                 ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(start_time, end_time)])
                 ydl_opts['force_keyframes_at_cuts'] = False
@@ -1215,13 +1215,21 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                             job["step"] = "Finalizing MP4 container..."
                             remux_cmd = [
                                 FFMPEG_EXE, "-y", "-i", actual_downloaded,
-                                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                                "-c:v", "copy",
                                 "-c:a", "aac", "-b:a", "192k",
                                 "-movflags", "+faststart", final_file_path
                             ]
                             res = subprocess.run(remux_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                            if res.returncode != 0:
-                                shutil.move(actual_downloaded, final_file_path)
+                            if res.returncode != 0 or not os.path.exists(final_file_path) or os.path.getsize(final_file_path) < 1024:
+                                encode_cmd = [
+                                    FFMPEG_EXE, "-y", "-i", actual_downloaded,
+                                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                                    "-c:a", "aac", "-b:a", "192k",
+                                    "-movflags", "+faststart", final_file_path
+                                ]
+                                res = subprocess.run(encode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                if res.returncode != 0:
+                                    shutil.move(actual_downloaded, final_file_path)
                     else:
                         # Attempt ultra-fast stream copy first (sub-second completion)
                         job["progress"] = 94
