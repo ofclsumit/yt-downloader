@@ -46,7 +46,7 @@ YTDLP_BASE_OPTS = {
     'no_warnings': True,
     'extractor_args': {
         'youtube': {
-            'player_client': ['visionos', 'mweb', 'android'],
+            'player_client': ['android_creator', 'tv_embedded', 'android_embedded'],
         }
     },
     'js_runtimes': {'node': {'path': NODE_BIN}} if (NODE_BIN and os.path.exists(NODE_BIN)) else {},
@@ -668,7 +668,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.0.1",
+        "version": "1.0.2",
         "engine": "youtube.py",
         "ffmpeg": FFMPEG_EXE,
         "ffmpeg_available": os.path.exists(FFMPEG_EXE) if os.path.isabs(FFMPEG_EXE) else True,
