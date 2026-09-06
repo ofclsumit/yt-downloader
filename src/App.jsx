@@ -600,6 +600,7 @@ function AppContent() {
         },
         body: JSON.stringify({
           url: videoUrl,
+          title: videoMetadata?.title || '',
           isClip: true,
           start: startTime,
           end: endTime,

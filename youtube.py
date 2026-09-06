@@ -694,7 +694,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.1.0",
+        "version": "1.1.1",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
@@ -1067,7 +1067,10 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                     if total > 0:
                         pct = int((downloaded / total) * 60)
                         job["progress"] = min(88, 30 + pct)
-                    job["step"] = "Downloading media stream..."
+                    if use_section_download:
+                        job["step"] = f"Downloading clip segment ({int(start_time)}s - {int(end_time)}s)..."
+                    else:
+                        job["step"] = "Downloading media stream..."
                 elif d['status'] == 'finished':
                     job["progress"] = 90
                     job["step"] = "Muxing and finalizing media..."
@@ -1111,10 +1114,12 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
             except Exception as dl_err:
-                # If range download fails or specific format fails, retry with best
-                print(f"[Download Error] Initial download failed: {dl_err}. Retrying with format=best...")
-                ydl_opts.pop('download_ranges', None)
-                ydl_opts['format'] = 'best'
+                # If range download fails or specific format fails, retry format without ever downloading the full video for a clip
+                print(f"[Download Error] Initial download failed: {dl_err}. Retrying format...")
+                ydl_opts['format'] = 'bestvideo+bestaudio/best' if not is_audio else 'ba/b'
+                if use_section_download:
+                    ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(start_time, end_time)])
+                    ydl_opts['force_keyframes_at_cuts'] = False
                 try:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])
