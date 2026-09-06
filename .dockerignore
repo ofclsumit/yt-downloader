@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.git/
+.gitignore
+.vercel/
+downloads/
+temp/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env*
