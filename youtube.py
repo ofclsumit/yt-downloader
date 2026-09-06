@@ -701,7 +701,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.1.7",
+        "version": "1.1.8",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
@@ -737,6 +737,25 @@ def api_test_clip(url: str = "https://www.youtube.com/watch?v=aqz-KE-bpKQ", star
         "filePath": file_path,
         "fileSize": file_size,
         "step": result.get("step")
+    }
+
+
+@app.get("/api/debug/test-ffmpeg-proxy")
+def api_test_ffmpeg_proxy():
+    proxy = get_rotating_proxy()
+    env = os.environ.copy()
+    if proxy:
+        env["http_proxy"] = proxy
+        env["https_proxy"] = proxy
+        env["HTTP_PROXY"] = proxy
+        env["HTTPS_PROXY"] = proxy
+    
+    cmd = [FFMPEG_EXE, "-y", "-v", "debug", "-i", "https://ipv4.webshare.io/", "-f", "null", "-"]
+    res = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    return {
+        "proxy": proxy,
+        "returncode": res.returncode,
+        "stderr": res.stderr[-1000:]
     }
 
 
