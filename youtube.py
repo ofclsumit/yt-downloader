@@ -108,6 +108,11 @@ def get_ytdlp_opts(custom_opts: dict = None, use_cookies: bool = False) -> dict:
     proxy = get_rotating_proxy()
     if proxy:
         opts["proxy"] = proxy
+        opts.setdefault("downloader_args", {})["ffmpeg_i"] = ["-http_proxy", proxy]
+        os.environ["http_proxy"] = proxy
+        os.environ["https_proxy"] = proxy
+        os.environ["HTTP_PROXY"] = proxy
+        os.environ["HTTPS_PROXY"] = proxy
     if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
         opts["cookiefile"] = COOKIES_FILE
     if PO_TOKEN_ENV:
@@ -694,7 +699,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.1.1",
+        "version": "1.1.2",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
@@ -1114,17 +1119,49 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
             except Exception as dl_err:
-                # If range download fails or specific format fails, retry format without ever downloading the full video for a clip
-                print(f"[Download Error] Initial download failed: {dl_err}. Retrying format...")
-                ydl_opts['format'] = 'bestvideo+bestaudio/best' if not is_audio else 'ba/b'
+                # If range download fails or specific format fails, fallback to direct stream clipping without ever downloading the full video
+                print(f"[Download Error] Initial download failed: {dl_err}. Falling back to direct segment cutting...")
                 if use_section_download:
-                    ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(start_time, end_time)])
-                    ydl_opts['force_keyframes_at_cuts'] = False
-                try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
-                except Exception as final_err:
-                    raise final_err
+                    try:
+                        ydl_info_opts = get_ytdlp_opts({'extract_flat': False, 'skip_download': True, 'quiet': True, 'no_warnings': True})
+                        with yt_dlp.YoutubeDL(ydl_info_opts) as ydl_info:
+                            v_info = ydl_info.extract_info(url, download=False)
+                        fmts = v_info.get('formats', [])
+                        proxy = ydl_info_opts.get('proxy')
+                        direct_out = os.path.join(TEMP_PATH, f"{job_id}_raw.mp4" if not is_audio else f"{job_id}_raw.mp3")
+                        if is_audio:
+                            a_f = next((f for f in fmts if f.get('acodec') != 'none' and f.get('url')), None)
+                            if not a_f:
+                                raise Exception("No audio stream URL available.")
+                            cmd = [FFMPEG_EXE, "-y"]
+                            if proxy:
+                                cmd.extend(["-http_proxy", proxy])
+                            cmd.extend(["-ss", str(start_time), "-to", str(end_time), "-i", a_f['url'], "-c:a", "libmp3lame", "-b:a", "192k", direct_out])
+                        else:
+                            h_target = int(quality) if quality.isdigit() else 1080
+                            v_cands = [f for f in fmts if f.get('vcodec') != 'none' and f.get('height') and f.get('height') <= h_target and f.get('url')]
+                            v_f = max(v_cands, key=lambda f: f.get('height', 0)) if v_cands else next((f for f in fmts if f.get('vcodec') != 'none' and f.get('url')), None)
+                            a_f = next((f for f in fmts if f.get('acodec') != 'none' and f.get('vcodec') == 'none' and f.get('url')), None)
+                            if not v_f:
+                                raise Exception("No video stream URL available.")
+                            cmd = [FFMPEG_EXE, "-y"]
+                            if proxy:
+                                cmd.extend(["-http_proxy", proxy])
+                            cmd.extend(["-ss", str(start_time), "-to", str(end_time), "-i", v_f['url']])
+                            if a_f and a_f.get('url'):
+                                if proxy:
+                                    cmd.extend(["-http_proxy", proxy])
+                                cmd.extend(["-ss", str(start_time), "-to", str(end_time), "-i", a_f['url']])
+                            cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", direct_out])
+                        
+                        job["step"] = f"Directly cutting segment ({int(start_time)}s - {int(end_time)}s)..."
+                        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                        if res.returncode != 0:
+                            raise Exception(f"Direct stream cutting failed: {res.stderr[:200]}")
+                    except Exception as fallback_err:
+                        raise Exception(f"Clip extraction failed: {dl_err} | Fallback: {fallback_err}")
+                else:
+                    raise dl_err
 
             # Locate downloaded media
             candidates = [os.path.join(TEMP_PATH, f) for f in os.listdir(TEMP_PATH) if f.startswith(f"{job_id}_raw")]
