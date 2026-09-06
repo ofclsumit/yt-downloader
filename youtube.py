@@ -694,7 +694,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.0.4",
+        "version": "1.0.5",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
