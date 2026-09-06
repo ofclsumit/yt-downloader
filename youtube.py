@@ -668,13 +668,48 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.0.2",
+        "version": "1.0.3",
         "engine": "youtube.py",
         "ffmpeg": FFMPEG_EXE,
         "ffmpeg_available": os.path.exists(FFMPEG_EXE) if os.path.isabs(FFMPEG_EXE) else True,
         "active_jobs": len([j for j in jobs.values() if j.get("status") in ["queued", "processing"]]),
         "channel_scraping_active": channel_status["is_running"]
     }
+
+
+@app.get("/api/debug/test-clients")
+def api_test_clients(url: str = "https://www.youtube.com/watch?v=aqz-KE-bpKQ"):
+    clients_to_test = [
+        ["tv_embedded"],
+        ["android_embedded"],
+        ["android_creator"],
+        ["android"],
+        ["tv"],
+        ["ios"],
+        ["web"]
+    ]
+    results = {}
+    for c in clients_to_test:
+        name = "+".join(c)
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'skip_download': True,
+                'extract_flat': False,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': c,
+                    }
+                }
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                fmts = [f for f in info.get("formats", []) if f.get("vcodec") != "none"]
+                results[name] = {"success": True, "formats": len(fmts), "resolutions": sorted(list(set([f.get("height") for f in fmts if f.get("height")])))[:5]}
+        except Exception as e:
+            results[name] = {"success": False, "error": str(e)[:150]}
+    return results
 
 
 @app.post("/api/analyze")
