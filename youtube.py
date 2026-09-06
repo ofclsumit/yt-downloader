@@ -46,7 +46,7 @@ YTDLP_BASE_OPTS = {
     'no_warnings': True,
     'extractor_args': {
         'youtube': {
-            'player_client': ['default'],
+            'player_client': ['visionos', 'android'],
         }
     },
     'js_runtimes': {'node': {'path': NODE_BIN}} if (NODE_BIN and os.path.exists(NODE_BIN)) else {},
@@ -54,7 +54,7 @@ YTDLP_BASE_OPTS = {
 
 # ---------------------------------------------------------
 # Production Infrastructure Configuration
-# 1. Rotating Residential Proxies
+# 1. Rotating / Static Proxies
 # 2. Concurrency Queue Semaphore
 # 3. Automatic Background Cleanup Daemon
 # ---------------------------------------------------------
@@ -84,7 +84,7 @@ PO_TOKEN_ENV = os.environ.get("YTDLP_PO_TOKEN", "").strip()
 
 def get_rotating_proxy() -> Optional[str]:
     """
-    Selects a rotating proxy from YTDLP_PROXIES env var or proxies.txt file.
+    Selects a proxy from YTDLP_PROXIES env var or proxies.txt file.
     Returns None if no proxy is configured, falling back to direct connection.
     """
     proxies = []
@@ -101,14 +101,14 @@ def get_rotating_proxy() -> Optional[str]:
         return random.choice(proxies)
     return None
 
-def get_ytdlp_opts(custom_opts: dict = None) -> dict:
-    """Builds yt-dlp options dictionary with rotating residential proxy or cookies if configured."""
+def get_ytdlp_opts(custom_opts: dict = None, use_cookies: bool = False) -> dict:
+    """Builds yt-dlp options dictionary with proxy. Injects cookies only when explicitly requested."""
     import copy
     opts = copy.deepcopy(YTDLP_BASE_OPTS)
     proxy = get_rotating_proxy()
     if proxy:
         opts["proxy"] = proxy
-    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
+    if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
         opts["cookiefile"] = COOKIES_FILE
     if PO_TOKEN_ENV:
         opts.setdefault("extractor_args", {}).setdefault("youtube", {})["po_token"] = [f"web+{PO_TOKEN_ENV}"]
@@ -694,7 +694,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.0.9",
+        "version": "1.1.0",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
@@ -809,17 +809,31 @@ def api_analyze(req: AnalyzeRequest):
 
     # Extract YouTube video metadata
     try:
-        ydl_opts = get_ytdlp_opts({
-            'extract_flat': False,
-            'skip_download': True,
-            'quiet': True,
-            'no_warnings': True,
-        })
-        if FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
-            ydl_opts['ffmpeg_location'] = FFMPEG_EXE
+        info = None
+        last_extract_err = None
+        for attempt in range(2):
+            try:
+                ydl_opts = get_ytdlp_opts({
+                    'extract_flat': False,
+                    'skip_download': True,
+                    'quiet': True,
+                    'no_warnings': True,
+                }, use_cookies=(attempt == 1 and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0))
+                if FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
+                    ydl_opts['ffmpeg_location'] = FFMPEG_EXE
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if info:
+                        break
+            except Exception as e:
+                last_extract_err = e
+                continue
+
+        if not info:
+            raise last_extract_err or Exception("Failed to extract video information.")
+
+        if True:
             title = info.get('title', 'Unknown Title')
             category = determine_category(title)
             duration = info.get('duration', 0)
@@ -1146,7 +1160,20 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
 
                     # If section download was used, yt-dlp already cut the section accurately
                     if use_section_download and os.path.exists(actual_downloaded) and os.path.getsize(actual_downloaded) > 1024:
-                        shutil.move(actual_downloaded, final_file_path)
+                        if actual_downloaded.lower().endswith('.mp4'):
+                            shutil.move(actual_downloaded, final_file_path)
+                        else:
+                            # Remux/transcode into standard universal MP4
+                            job["step"] = "Finalizing MP4 container..."
+                            remux_cmd = [
+                                FFMPEG_EXE, "-y", "-i", actual_downloaded,
+                                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                                "-c:a", "aac", "-b:a", "192k",
+                                "-movflags", "+faststart", final_file_path
+                            ]
+                            res = subprocess.run(remux_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                            if res.returncode != 0:
+                                shutil.move(actual_downloaded, final_file_path)
                     else:
                         # Attempt ultra-fast stream copy first (sub-second completion)
                         job["progress"] = 94
@@ -1191,12 +1218,30 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
             else:
                 if is_audio:
                     final_filename = f"{clean_title}.mp3"
+                    final_file_path = os.path.join(output_dir, final_filename)
+                    shutil.move(actual_downloaded, final_file_path)
                 else:
                     q_suffix = f"_{quality}p" if quality.isdigit() else f"_{quality}"
                     final_filename = f"{clean_title}{q_suffix}.mp4"
-
-                final_file_path = os.path.join(output_dir, final_filename)
-                shutil.move(actual_downloaded, final_file_path)
+                    final_file_path = os.path.join(output_dir, final_filename)
+                    if actual_downloaded.lower().endswith('.mp4'):
+                        shutil.move(actual_downloaded, final_file_path)
+                    else:
+                        job["step"] = "Finalizing MP4 container..."
+                        remux_cmd = [
+                            FFMPEG_EXE, "-y", "-i", actual_downloaded,
+                            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                            "-c:a", "aac", "-b:a", "192k",
+                            "-movflags", "+faststart", final_file_path
+                        ]
+                        res = subprocess.run(remux_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                        if res.returncode != 0:
+                            shutil.move(actual_downloaded, final_file_path)
+                        else:
+                            try:
+                                os.remove(actual_downloaded)
+                            except Exception:
+                                pass
 
             job["progress"] = 100
             job["step"] = "Completed"

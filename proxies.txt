@@ -1,2 +1,6 @@
-# Rotating Residential / Datacenter Proxies
-http://ajgedwei-rotate:0q8ofh1we393@p.webshare.io:80
+# Dedicated Webshare Static Proxy Slots (Verified working against YouTube)
+http://ajgedwei-2:0q8ofh1we393@p.webshare.io:80
+http://ajgedwei-3:0q8ofh1we393@p.webshare.io:80
+http://ajgedwei-4:0q8ofh1we393@p.webshare.io:80
+http://ajgedwei-6:0q8ofh1we393@p.webshare.io:80
+http://ajgedwei-8:0q8ofh1we393@p.webshare.io:80
