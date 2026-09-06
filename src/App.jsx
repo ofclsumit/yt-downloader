@@ -564,23 +564,8 @@ function AppContent() {
     };
   }, [sessionState, sessionId, handleSessionExpired]);
 
-  // Page Refresh / Tab Close Protection
-  const sessionRef = React.useRef({ sessionId, activeJobId });
-  sessionRef.current = { sessionId, activeJobId };
-
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      const { sessionId: sId, activeJobId: jId } = sessionRef.current;
-      if (sId || jId) {
-        sendSessionCleanupBeacon(sId, jId);
-      }
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
-  }, []);
+  // Note: Page refresh and tab switches preserve the temporary session.
+  // The server-side 5-minute inactivity tracker automatically reclaims idle sessions.
 
   // Trigger Clip Job
   const handleCreateClip = useCallback(async () => {

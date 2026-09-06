@@ -47,7 +47,7 @@ YTDLP_BASE_OPTS = {
     'no_warnings': True,
     'extractor_args': {
         'youtube': {
-            'player_client': ['tv_embedded', 'android_embedded', 'android_creator'],
+            'player_client': ['android'],
         }
     },
     'js_runtimes': {'node': {'path': NODE_BIN}} if (NODE_BIN and os.path.exists(NODE_BIN)) else {},
@@ -701,7 +701,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.1.6",
+        "version": "1.1.7",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),

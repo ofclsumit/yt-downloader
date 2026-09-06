@@ -253,8 +253,8 @@ export default function YouTubeUrlInput({
       {activeTab === 'url' && (
         <form onSubmit={handleSubmitUrl} className="url-input-form" noValidate>
           <div className="input-label-row">
-            <label htmlFor="yt-url-input" className="input-label">
-              Paste Online Video URL
+            <label htmlFor="youtube-url-input" className="input-label">
+              Paste YouTube video URL
             </label>
             <span className="url-examples-hint">Supports Shorts, Clips &amp; Videos</span>
           </div>
@@ -272,7 +272,7 @@ export default function YouTubeUrlInput({
                 type="url"
                 inputMode="url"
                 className="url-text-input"
-                placeholder="Paste video link (e.g. https://www.youtube.com/watch?v=...)"
+                placeholder="Paste YouTube video URL (e.g. https://www.youtube.com/watch?v=...)"
                 value={url}
                 onChange={(e) => {
                   setUrl(e.target.value);
@@ -289,14 +289,14 @@ export default function YouTubeUrlInput({
                 type="button"
                 className="input-paste-btn"
                 onClick={handlePaste}
-                title="Paste from clipboard"
-                aria-label="Paste link from clipboard"
+                title="Paste URL from clipboard"
+                aria-label="Paste URL from clipboard"
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
                   <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                 </svg>
-                <span>Paste</span>
+                <span>Paste URL</span>
               </button>
             </div>
 
@@ -309,11 +309,11 @@ export default function YouTubeUrlInput({
               {isLoading ? (
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.6rem' }}>
                   <CircularLoader size="sm" color="#ffffff" />
-                  <span>Analyzing video...</span>
+                  <span>Preparing workspace...</span>
                 </span>
               ) : (
                 <>
-                  <span>Analyze Video</span>
+                  <span>Continue</span>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <line x1="5" y1="12" x2="19" y2="12" />
                     <polyline points="12 5 19 12 12 19" />
