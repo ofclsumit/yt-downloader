@@ -701,7 +701,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.1.8",
+        "version": "1.1.9",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
@@ -757,6 +757,21 @@ def api_test_ffmpeg_proxy():
         "returncode": res.returncode,
         "stderr": res.stderr[-1000:]
     }
+
+
+@app.get("/api/debug/test-direct")
+def api_test_direct():
+    opts = {
+        'quiet': True,
+        'skip_download': True,
+        'extractor_args': {'youtube': {'player_client': ['android']}}
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info("https://www.youtube.com/watch?v=aqz-KE-bpKQ", download=False)
+            return {"success": True, "title": info.get("title"), "formats": len(info.get("formats", []))}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/api/debug/test-clients")
