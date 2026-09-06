@@ -39,7 +39,7 @@ if os.path.exists(FFMPEG_NODE_PATH):
     if ffmpeg_dir not in os.environ.get("PATH", ""):
         os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
 else:
-    FFMPEG_EXE = "ffmpeg"
+    FFMPEG_EXE = shutil.which("ffmpeg") or "ffmpeg"
 
 NODE_BIN = shutil.which('node') or r"C:\Program Files\nodejs\node.exe"
 YTDLP_BASE_OPTS = {
@@ -109,11 +109,12 @@ def get_ytdlp_opts(custom_opts: dict = None, use_cookies: bool = False) -> dict:
     proxy = get_rotating_proxy()
     if proxy:
         opts["proxy"] = proxy
-        opts.setdefault("downloader_args", {})["ffmpeg_i"] = ["-http_proxy", proxy]
         os.environ["http_proxy"] = proxy
         os.environ["https_proxy"] = proxy
         os.environ["HTTP_PROXY"] = proxy
         os.environ["HTTPS_PROXY"] = proxy
+    if FFMPEG_EXE and (os.path.isabs(FFMPEG_EXE) or shutil.which(FFMPEG_EXE)):
+        opts["ffmpeg_location"] = FFMPEG_EXE
     if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
         opts["cookiefile"] = COOKIES_FILE
     if PO_TOKEN_ENV:
@@ -700,7 +701,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.1.3",
+        "version": "1.1.4",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
@@ -1131,21 +1132,26 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                         proxy = ydl_info_opts.get('proxy')
                         direct_out = os.path.join(TEMP_PATH, f"{job_id}_raw.mp4" if not is_audio else f"{job_id}_raw.mp3")
                         if is_audio:
-                            a_f = next((f for f in fmts if f.get('acodec') != 'none' and f.get('url')), None)
+                            a_cands = [f for f in fmts if f.get('acodec') != 'none' and f.get('url')]
+                            a_direct = [f for f in a_cands if 'videoplayback' in f.get('url', '')]
+                            a_f = a_direct[0] if a_direct else (a_cands[0] if a_cands else None)
                             if not a_f:
                                 raise Exception("No audio stream URL available.")
-                            cmd = [FFMPEG_EXE, "-y"]
+                            cmd = [FFMPEG_EXE, "-y", "-protocol_whitelist", "file,crypto,data,http,https,tcp,tls"]
                             if proxy:
                                 cmd.extend(["-http_proxy", proxy])
                             cmd.extend(["-ss", str(start_time), "-to", str(end_time), "-i", a_f['url'], "-c:a", "libmp3lame", "-b:a", "192k", direct_out])
                         else:
                             h_target = int(quality) if quality.isdigit() else 1080
                             v_cands = [f for f in fmts if f.get('vcodec') != 'none' and f.get('height') and f.get('height') <= h_target and f.get('url')]
-                            v_f = max(v_cands, key=lambda f: f.get('height', 0)) if v_cands else next((f for f in fmts if f.get('vcodec') != 'none' and f.get('url')), None)
-                            a_f = next((f for f in fmts if f.get('acodec') != 'none' and f.get('vcodec') == 'none' and f.get('url')), None)
+                            v_direct = [f for f in v_cands if 'videoplayback' in f.get('url', '')]
+                            v_f = max(v_direct, key=lambda f: f.get('height', 0)) if v_direct else (max(v_cands, key=lambda f: f.get('height', 0)) if v_cands else next((f for f in fmts if f.get('vcodec') != 'none' and f.get('url')), None))
+                            a_cands = [f for f in fmts if f.get('acodec') != 'none' and f.get('vcodec') == 'none' and f.get('url')]
+                            a_direct = [f for f in a_cands if 'videoplayback' in f.get('url', '')]
+                            a_f = a_direct[0] if a_direct else (a_cands[0] if a_cands else None)
                             if not v_f:
                                 raise Exception("No video stream URL available.")
-                            cmd = [FFMPEG_EXE, "-y"]
+                            cmd = [FFMPEG_EXE, "-y", "-protocol_whitelist", "file,crypto,data,http,https,tcp,tls"]
                             if proxy:
                                 cmd.extend(["-http_proxy", proxy])
                             cmd.extend(["-ss", str(start_time), "-to", str(end_time), "-i", v_f['url']])
@@ -1158,7 +1164,7 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                         job["step"] = f"Directly cutting segment ({int(start_time)}s - {int(end_time)}s)..."
                         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                         if res.returncode != 0:
-                            raise Exception(f"Direct stream cutting failed: {res.stderr[:200]}")
+                            raise Exception(f"Direct stream cutting failed: {res.stderr[-500:]}")
                     except Exception as fallback_err:
                         raise Exception(f"Clip extraction failed: {dl_err} | Fallback: {fallback_err}")
                 else:
