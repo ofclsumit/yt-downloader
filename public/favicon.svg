@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <defs>
+    <linearGradient id="trim-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#06b6d4" />
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="8" fill="#090d16" />
+  <rect x="0.5" y="0.5" width="31" height="31" rx="7.5" stroke="#6366f1" stroke-opacity="0.3" />
+  <!-- Left caliper bracket -->
+  <path d="M7 9h3v2H9v10h1v2H7V9z" fill="url(#trim-grad)" />
+  <!-- Right caliper bracket -->
+  <path d="M25 9h-3v2h1v10h-1v2h3V9z" fill="url(#trim-grad)" />
+  <!-- Center Play Diamond -->
+  <path d="M14 11.5l6 4.5-6 4.5v-9z" fill="#ffffff" />
+</svg>
