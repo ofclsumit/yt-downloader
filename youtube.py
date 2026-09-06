@@ -9,6 +9,7 @@ import os
 import re
 import uuid
 import sys
+import subprocess
 import secrets
 import threading
 from typing import Optional, Dict, Any, List
@@ -699,7 +700,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.1.2",
+        "version": "1.1.3",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
@@ -1172,7 +1173,6 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
             job["progress"] = 92
             job["step"] = "Finalizing video clip with FFmpeg..."
 
-            import subprocess
             if is_clip and end_time > start_time:
                 if is_audio:
                     clip_filename = f"{clean_title}_clip_{int(start_time)}s_{int(end_time)}s.mp3"
