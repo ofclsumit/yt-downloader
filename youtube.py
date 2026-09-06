@@ -46,7 +46,7 @@ YTDLP_BASE_OPTS = {
     'no_warnings': True,
     'extractor_args': {
         'youtube': {
-            'player_client': ['android_creator', 'tv_embedded', 'android_embedded'],
+            'player_client': ['visionos', 'android', 'web'],
         }
     },
     'js_runtimes': {'node': {'path': NODE_BIN}} if (NODE_BIN and os.path.exists(NODE_BIN)) else {},
@@ -694,7 +694,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.0.5",
+        "version": "1.0.6",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
@@ -975,14 +975,24 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
             job["step"] = "Worker slot allocated. Preparing download..."
 
             # Extract info with rotating proxy if enabled
-            ydl_info_opts = get_ytdlp_opts({'quiet': True})
-            if FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
-                ydl_info_opts['ffmpeg_location'] = FFMPEG_EXE
+            title = req_data.get("title")
+            if not title:
+                ydl_info_opts = get_ytdlp_opts({
+                    'extract_flat': False,
+                    'skip_download': True,
+                    'quiet': True,
+                    'no_warnings': True,
+                })
+                if FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
+                    ydl_info_opts['ffmpeg_location'] = FFMPEG_EXE
 
-            with yt_dlp.YoutubeDL(ydl_info_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                title = info.get('title', 'video')
-                clean_title = re.sub(r'[\\/*?:"<>|]', '', title).strip()
+                try:
+                    with yt_dlp.YoutubeDL(ydl_info_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        title = info.get('title', 'video')
+                except Exception:
+                    title = "video"
+            clean_title = re.sub(r'[\\/*?:"<>|]', '', title).strip()
 
             # Determine category
             category = user_category or determine_category(title)
@@ -1018,9 +1028,9 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
             else:
                 try:
                     h_int = int(quality)
-                    ydl_format = f'bv*[height<={h_int}][ext=mp4]+ba[ext=m4a]/b[height<={h_int}][ext=mp4] / bv*[height<={h_int}]+ba/b[height<={h_int}] / best'
+                    ydl_format = f'bv*[height<={h_int}]+ba/b[height<={h_int}] / bv*[height<={h_int}] / best'
                 except Exception:
-                    ydl_format = 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4] / bv*+ba/b / best'
+                    ydl_format = 'bv*+ba/b / best'
 
             temp_video_pattern = os.path.join(TEMP_PATH, f"{job_id}_raw.%(ext)s")
             ffmpeg_dir = os.path.dirname(FFMPEG_EXE) if FFMPEG_EXE and os.path.isabs(FFMPEG_EXE) else None
