@@ -668,6 +668,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
+        "version": "1.0.1",
         "engine": "youtube.py",
         "ffmpeg": FFMPEG_EXE,
         "ffmpeg_available": os.path.exists(FFMPEG_EXE) if os.path.isabs(FFMPEG_EXE) else True,
@@ -886,7 +887,7 @@ def api_analyze(req: AnalyzeRequest):
         elif "no formats" in err_str.lower():
             detail = "No compatible video qualities were found."
         else:
-            detail = "Unable to analyze this video. Please try again."
+            detail = f"Unable to analyze this video: {err_str}"
         raise HTTPException(status_code=400, detail=detail)
 
 
