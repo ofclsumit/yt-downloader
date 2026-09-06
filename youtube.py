@@ -694,7 +694,7 @@ def api_session_close(
 def api_health():
     return {
         "status": "healthy",
-        "version": "1.0.6",
+        "version": "1.0.7",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
@@ -1028,9 +1028,9 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
             else:
                 try:
                     h_int = int(quality)
-                    ydl_format = f'bv*[height<={h_int}]+ba/b[height<={h_int}] / bv*[height<={h_int}] / best'
+                    ydl_format = f'bestvideo[height<={h_int}]+bestaudio/best[height<={h_int}] / bestvideo+bestaudio / best'
                 except Exception:
-                    ydl_format = 'bv*+ba/b / best'
+                    ydl_format = 'bestvideo+bestaudio/best'
 
             temp_video_pattern = os.path.join(TEMP_PATH, f"{job_id}_raw.%(ext)s")
             ffmpeg_dir = os.path.dirname(FFMPEG_EXE) if FFMPEG_EXE and os.path.isabs(FFMPEG_EXE) else None
@@ -1055,13 +1055,15 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
             except Exception as dl_err:
-                # If range download fails, fallback to full download without range
-                if use_section_download:
-                    ydl_opts.pop('download_ranges', None)
+                # If range download fails or specific format fails, retry with best
+                print(f"[Download Error] Initial download failed: {dl_err}. Retrying with format=best...")
+                ydl_opts.pop('download_ranges', None)
+                ydl_opts['format'] = 'best'
+                try:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])
-                else:
-                    raise dl_err
+                except Exception as final_err:
+                    raise final_err
 
             # Locate downloaded media
             candidates = [os.path.join(TEMP_PATH, f) for f in os.listdir(TEMP_PATH) if f.startswith(f"{job_id}_raw")]
