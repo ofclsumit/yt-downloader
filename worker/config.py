@@ -21,21 +21,32 @@ try:
 except ImportError:
     pass
 
+def clean_env(key: str, default: str = "") -> str:
+    val = os.environ.get(key)
+    if val is None:
+        for k, v in os.environ.items():
+            if k.strip().upper() == key.strip().upper():
+                val = v
+                break
+    if val is None:
+        val = default
+    return str(val).strip().strip('"').strip("'")
+
 # Database
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+DATABASE_URL = clean_env("DATABASE_URL")
 
 # Redis Queue
-REDIS_URL = os.environ.get("UPSTASH_REDIS_URL") or os.environ.get("REDIS_URL", "")
-UPSTASH_REST_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "")
-UPSTASH_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
-REDIS_QUEUE_KEY = os.environ.get("REDIS_QUEUE_KEY", "yt_clip_jobs")
+REDIS_URL = clean_env("UPSTASH_REDIS_URL") or clean_env("REDIS_URL")
+UPSTASH_REST_URL = clean_env("UPSTASH_REDIS_REST_URL")
+UPSTASH_REST_TOKEN = clean_env("UPSTASH_REDIS_REST_TOKEN")
+REDIS_QUEUE_KEY = clean_env("REDIS_QUEUE_KEY", "yt_clip_jobs")
 
 # Cloudflare R2
-R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID", "")
-R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID", "")
-R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY", "")
-R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME", "yt-clips")
-R2_ENDPOINT_URL = os.environ.get("R2_ENDPOINT_URL") or (
+R2_ACCOUNT_ID = clean_env("R2_ACCOUNT_ID")
+R2_ACCESS_KEY_ID = clean_env("R2_ACCESS_KEY_ID")
+R2_SECRET_ACCESS_KEY = clean_env("R2_SECRET_ACCESS_KEY")
+R2_BUCKET_NAME = clean_env("R2_BUCKET_NAME", "yt-downloader")
+R2_ENDPOINT_URL = clean_env("R2_ENDPOINT_URL") or (
     f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCOUNT_ID else ""
 )
 

@@ -131,6 +131,10 @@ def main():
     logger.info(f"Max Clip Duration: {config.MAX_CLIP_DURATION_SECONDS}s")
     logger.info(f"Clip Expiration: {config.CLIP_EXPIRATION_HOURS} hour(s)")
     logger.info(f"FFmpeg Binary: {config.FFMPEG_EXE}")
+    logger.info(f"Database Configured: {'YES' if config.DATABASE_URL else 'NO (DATABASE_URL missing)'}")
+    logger.info(f"Redis TCP Configured: {'YES' if config.REDIS_URL else 'NO (REDIS_URL missing)'}")
+    logger.info(f"Upstash REST Configured: {'YES' if (config.UPSTASH_REST_URL and config.UPSTASH_REST_TOKEN) else 'NO'}")
+    logger.info(f"R2 Storage Configured: {'YES' if (config.R2_ACCOUNT_ID and config.R2_ACCESS_KEY_ID) else 'NO (R2 credentials missing)'}")
     logger.info("=" * 60)
 
     # If running as a Render Web Service, start HTTP health check listener
