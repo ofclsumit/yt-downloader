@@ -22,7 +22,23 @@ from worker import diagnostics
 
 logger = logging.getLogger("worker.processor")
 
-CLIENT_STRATEGIES = [
+CLIENT_STRATEGIES_NO_COOKIES = [
+    {
+        "name": "visionos",
+        "player_client": ['visionos'],
+    },
+    {
+        "name": "tv_embedded",
+        "player_client": ['tv_embedded'],
+    },
+    {
+        "name": "android_creator",
+        "player_client": ['android_creator'],
+    },
+    {
+        "name": "android_music",
+        "player_client": ['android_music'],
+    },
     {
         "name": "web_embedded",
         "player_client": ['web_embedded', 'default', '-tv_downgraded', 'android'],
@@ -32,14 +48,42 @@ CLIENT_STRATEGIES = [
         "player_client": ['android'],
     },
     {
-        "name": "ios_visionos",
-        "player_client": ['ios', 'visionos'],
-    },
-    {
         "name": "default",
         "player_client": ['default', '-tv_downgraded'],
     },
 ]
+
+CLIENT_STRATEGIES_WITH_COOKIES = [
+    {
+        "name": "web",
+        "player_client": ['web', 'default'],
+    },
+    {
+        "name": "web_embedded",
+        "player_client": ['web_embedded', 'default', '-tv_downgraded'],
+    },
+    {
+        "name": "mweb",
+        "player_client": ['mweb'],
+    },
+    {
+        "name": "visionos",
+        "player_client": ['visionos'],
+    },
+    {
+        "name": "tv_embedded",
+        "player_client": ['tv_embedded'],
+    },
+    {
+        "name": "android",
+        "player_client": ['android'],
+    },
+]
+
+def get_client_strategies(has_cookies: bool = False):
+    return CLIENT_STRATEGIES_WITH_COOKIES if has_cookies else CLIENT_STRATEGIES_NO_COOKIES
+
+CLIENT_STRATEGIES = CLIENT_STRATEGIES_NO_COOKIES
 
 def probe_media_file(file_path: str) -> Dict[str, Any]:
     """
@@ -470,8 +514,9 @@ def extract_video_metadata(
 
     with scoped_cookie_file(job_dir) as cookie_file:
         cookie_file_used = bool(cookie_file and os.path.exists(cookie_file))
+        active_strategies = get_client_strategies(has_cookies=cookie_configured)
 
-        for strategy in CLIENT_STRATEGIES:
+        for strategy in active_strategies:
             client_name = strategy["name"]
             player_client = strategy["player_client"]
             diag_logger = YtDlpDiagnosticLogger()
@@ -482,7 +527,6 @@ def extract_video_metadata(
                 'quiet': False,
                 'logger': diag_logger,
                 'no_warnings': False,
-                'format': 'bv*+ba/b',
                 'js_runtimes': {'deno': {}, 'node': {}},
                 'remote_components': ['ejs:github'],
                 'extractor_args': {
@@ -656,8 +700,10 @@ def process_job(job_data: Dict[str, Any]) -> None:
                     pct = int((downloaded / total) * 30)
                     db.update_job_progress(job_id, min(70, 40 + pct))
 
+        has_conf_cookies = bool(config.has_cookies())
+        dl_strategies = get_client_strategies(has_cookies=has_conf_cookies)
         ordered_strategies = sorted(
-            CLIENT_STRATEGIES,
+            dl_strategies,
             key=lambda s: 0 if s["name"] == selected_client else 1
         )
         download_success = False

@@ -116,6 +116,8 @@ def _parse_cookie_content(raw_val: str) -> Optional[str]:
 _RAW_COOKIES = clean_env("YTDLP_COOKIES") or clean_env("YTDLP_COOKIES_B64")
 _PARSED_COOKIES = _parse_cookie_content(_RAW_COOKIES)
 _COOKIES_PATH = clean_env("YTDLP_COOKIES_PATH")
+YTDLP_COOKIES_URL = clean_env("YTDLP_COOKIES_URL")
+_CACHED_URL_COOKIES = None
 
 DEFAULT_SECRET_PATHS = [
     Path("/etc/secrets/cookies.txt"),
@@ -146,12 +148,33 @@ def get_cookie_content() -> Optional[str]:
     Returns the in-memory cookie content.
     Checks:
     1. YTDLP_COOKIES / YTDLP_COOKIES_B64 environment variables
-    2. YTDLP_COOKIES_PATH custom file path
-    3. Render Secret Files mounted at /etc/secrets/*
-    4. Local project cookies.txt
+    2. YTDLP_COOKIES_URL remote HTTP(S) URL
+    3. YTDLP_COOKIES_PATH custom file path
+    4. Render Secret Files mounted at /etc/secrets/*
+    5. Local project cookies.txt
     """
+    global _CACHED_URL_COOKIES
     if _PARSED_COOKIES:
         return _PARSED_COOKIES
+
+    # Check remote URL if configured
+    if YTDLP_COOKIES_URL and YTDLP_COOKIES_URL.startswith("http"):
+        if _CACHED_URL_COOKIES:
+            return _CACHED_URL_COOKIES
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                YTDLP_COOKIES_URL,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    raw_remote = resp.read().decode("utf-8", errors="ignore").strip()
+                    parsed = _parse_cookie_content(raw_remote) or raw_remote
+                    _CACHED_URL_COOKIES = parsed
+                    return _CACHED_URL_COOKIES
+        except Exception:
+            pass
 
     # Check custom path if configured
     if _COOKIES_PATH and os.path.exists(_COOKIES_PATH):
@@ -188,6 +211,8 @@ def get_cookie_source() -> str:
     """Returns a description of where cookies were loaded from (without revealing content)."""
     if _PARSED_COOKIES:
         return "Environment Variable"
+    if YTDLP_COOKIES_URL and _CACHED_URL_COOKIES:
+        return "Remote URL (YTDLP_COOKIES_URL)"
     if _COOKIES_PATH and os.path.exists(_COOKIES_PATH):
         return "Custom Path (YTDLP_COOKIES_PATH)"
     for p in _discover_secret_files():

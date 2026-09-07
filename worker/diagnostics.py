@@ -134,12 +134,13 @@ def execute_metadata_probe(url: str, cookie_path: Optional[str] = None) -> Tuple
     Executes a metadata-only extraction using yt-dlp with client fallback cascade.
     Returns (success, classification_or_title, sanitized_stderr).
     """
-    from worker.media_processor import YtDlpDiagnosticLogger, classify_ytdlp_error, CLIENT_STRATEGIES
+    from worker.media_processor import YtDlpDiagnosticLogger, classify_ytdlp_error, get_client_strategies
 
     last_code = "UNKNOWN_ERROR"
     last_err = ""
+    strategies = get_client_strategies(has_cookies=bool(cookie_path))
 
-    for strategy in CLIENT_STRATEGIES:
+    for strategy in strategies:
         diag_logger = YtDlpDiagnosticLogger()
         ydl_opts = {
             'skip_download': True,
@@ -147,7 +148,6 @@ def execute_metadata_probe(url: str, cookie_path: Optional[str] = None) -> Tuple
             'quiet': False,
             'logger': diag_logger,
             'no_warnings': False,
-            'format': 'bv*+ba/b',
             'js_runtimes': {'deno': {}, 'node': {}},
             'remote_components': ['ejs:github'],
             'extractor_args': {
