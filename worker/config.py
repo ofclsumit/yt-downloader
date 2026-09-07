@@ -50,6 +50,21 @@ R2_ENDPOINT_URL = clean_env("R2_ENDPOINT_URL") or (
     f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCOUNT_ID else ""
 )
 
+# YouTube Bot Bypass & Cookies
+YTDLP_COOKIES_TEXT = clean_env("YTDLP_COOKIES")
+YTDLP_COOKIES_FILE = None
+if YTDLP_COOKIES_TEXT:
+    try:
+        LOCAL_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        cookie_p = LOCAL_TEMP_DIR / "cookies.txt"
+        cookie_p.write_text(YTDLP_COOKIES_TEXT, encoding="utf-8")
+        YTDLP_COOKIES_FILE = str(cookie_p)
+    except Exception:
+        pass
+elif clean_env("YTDLP_COOKIES_PATH") and os.path.exists(clean_env("YTDLP_COOKIES_PATH")):
+    YTDLP_COOKIES_FILE = clean_env("YTDLP_COOKIES_PATH")
+
+
 # Limits & Operational Parameters
 MAX_CLIP_DURATION_SECONDS = int(os.environ.get("MAX_CLIP_DURATION_SECONDS", "300"))  # 5 minutes
 WORKER_CONCURRENCY = int(os.environ.get("WORKER_CONCURRENCY", "2"))

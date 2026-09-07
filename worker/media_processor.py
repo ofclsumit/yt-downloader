@@ -39,6 +39,8 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
         return "INVALID_URL", "The provided link is not a valid or supported YouTube URL."
     if "too many requests" in lower_err or "429" in lower_err:
         return "DOWNLOAD_FAILED", "YouTube is temporarily throttling requests. Please try again shortly."
+    if "sign in to confirm you’re not a bot" in lower_err or "sign in to confirm you're not a bot" in lower_err:
+        return "BOT_DETECTION", "YouTube is requesting bot verification for datacenter IPs. Please configure YTDLP_COOKIES."
     return "DOWNLOAD_FAILED", f"Media extraction failed: {err_str[:200]}"
 
 def extract_video_metadata(url: str) -> Dict[str, Any]:
@@ -48,9 +50,16 @@ def extract_video_metadata(url: str) -> Dict[str, Any]:
         'extract_flat': False,
         'quiet': True,
         'no_warnings': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios'],
+            }
+        },
     }
     if config.FFMPEG_EXE:
         ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
+    if config.YTDLP_COOKIES_FILE and os.path.exists(config.YTDLP_COOKIES_FILE):
+        ydl_opts['cookiefile'] = config.YTDLP_COOKIES_FILE
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -195,26 +204,34 @@ def process_job(job_data: Dict[str, Any]) -> None:
                     db.update_job_progress(job_id, min(70, 40 + pct))
 
         ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
+            'format': 'bestvideo+bestaudio/best',
             'outtmpl': raw_download_template,
             'merge_output_format': 'mp4',
             'progress_hooks': [progress_hook],
             'quiet': True,
             'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'ios'],
+                }
+            },
             # Documented yt-dlp section downloading function
             'download_ranges': yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)]),
             'force_keyframes_at_cuts': False,
         }
         if config.FFMPEG_EXE:
             ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
+        if config.YTDLP_COOKIES_FILE and os.path.exists(config.YTDLP_COOKIES_FILE):
+            ydl_opts['cookiefile'] = config.YTDLP_COOKIES_FILE
 
         is_pre_cut = True
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
         except Exception as dl_err:
-            logger.warning(f"[JOB {job_id}] Section download error: {dl_err}. Retrying with format 'best'...")
+            logger.warning(f"[JOB {job_id}] Section download error: {dl_err}. Retrying with alternate client format 'best'...")
             ydl_opts['format'] = 'best'
+            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'android']}}
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
