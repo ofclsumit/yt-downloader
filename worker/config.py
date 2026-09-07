@@ -226,6 +226,23 @@ def get_cookie_source() -> str:
                 pass
     return "None"
 
+def get_secret_debug_info() -> str:
+    """Returns safe diagnostic info about secret files and cookie configuration without exposing secrets."""
+    parts = []
+    render_secrets_dir = Path("/etc/secrets")
+    if render_secrets_dir.exists() and render_secrets_dir.is_dir():
+        try:
+            files = [f"{f.name} ({f.stat().st_size}b)" for f in render_secrets_dir.iterdir() if f.is_file()]
+            parts.append(f"/etc/secrets files: {files if files else 'empty dir'}")
+        except Exception as e:
+            parts.append(f"/etc/secrets read err: {e}")
+    else:
+        parts.append("/etc/secrets missing")
+
+    env_cookie_keys = [k for k in os.environ.keys() if "COOKIE" in k.upper()]
+    parts.append(f"env vars: {env_cookie_keys if env_cookie_keys else 'none'}")
+    return " | ".join(parts)
+
 # Backward compatibility alias - DO NOT use for writing global files
 YTDLP_COOKIES_FILE = None
 
