@@ -66,6 +66,7 @@ Follow this guide to deploy each component of the distributed architecture acros
    - `WORKER_CONCURRENCY`: `2`
    - `MAX_CLIP_DURATION_SECONDS`: `300`
    - `CLIP_EXPIRATION_HOURS`: `1`
+   - `YTDLP_PROXY`: (Recommended) Proxy URL (e.g., `http://username-rotate:password@p.webshare.io:80`) to eliminate datacenter IP blocking and bypass YouTube bot checks with sticky session auto-rotation.
 6. Click **Deploy**. The worker will pull jobs from Redis and process media asynchronously!
 
 ---

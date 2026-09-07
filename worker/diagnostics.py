@@ -41,6 +41,7 @@ def sanitize_diagnostic_text(text: Optional[str]) -> str:
     sanitized = re.sub(r'(--header\s+["\'][^"\']*Authorization[^"\']*["\'])', '--header [REDACTED]', sanitized)
     sanitized = re.sub(r'([?&]X-Amz-Signature=)[^&\s]+', r'\1[REDACTED]', sanitized)
     sanitized = re.sub(r'([?&]X-Amz-Credential=)[^&\s]+', r'\1[REDACTED]', sanitized)
+    sanitized = re.sub(r'://[^:\s]+:[^@\s]+@', r'://[REDACTED_USER]:[REDACTED_PASS]@', sanitized)
     return sanitized
 
 def get_ytdlp_version() -> str:
@@ -105,6 +106,7 @@ def get_all_diagnostics() -> Dict[str, Any]:
         "deno_version": deno_ver,
         "node_version": node_ver,
         "cookies_configured": cookies_conf,
+        "proxy_configured": bool(config.YTDLP_PROXY),
     }
 
 def verify_cookie_format(cookie_content: Optional[str]) -> Tuple[bool, int]:
@@ -159,7 +161,7 @@ def execute_metadata_probe(url: str, cookie_path: Optional[str] = None) -> Tuple
         if config.FFMPEG_EXE:
             ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
         if config.YTDLP_PROXY:
-            ydl_opts['proxy'] = config.YTDLP_PROXY
+            ydl_opts['proxy'] = config.get_job_proxy("startup") or config.YTDLP_PROXY
         if cookie_path and os.path.exists(cookie_path):
             ydl_opts['cookiefile'] = cookie_path
 

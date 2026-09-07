@@ -60,6 +60,32 @@ R2_ENDPOINT_URL = clean_env("R2_ENDPOINT_URL") or (
 # Optional Proxy Support
 YTDLP_PROXY = clean_env("YTDLP_PROXY") or clean_env("HTTP_PROXY") or clean_env("HTTPS_PROXY")
 
+def get_job_proxy(session_id: Optional[str] = None) -> Optional[str]:
+    """
+    Returns the configured proxy URL with sticky session support.
+    For Webshare proxies, ensures that metadata extraction and FFmpeg stream slicing
+    share the identical sticky IP session (e.g. username-sessionID).
+    Eliminates YouTube CDN 403 Forbidden and bypasses datacenter IP blocking.
+    """
+    raw = YTDLP_PROXY
+    if not raw:
+        return None
+    try:
+        import urllib.parse
+        import re
+        parts = urllib.parse.urlsplit(raw)
+        if "webshare.io" in (parts.hostname or ""):
+            user = parts.username or ""
+            base_user = re.sub(r'(-rotate|-\d+)$', '', user)
+            new_user = f"{base_user}-{session_id}" if session_id else f"{base_user}-1"
+            netloc = f"{new_user}:{parts.password}@{parts.hostname}"
+            if parts.port:
+                netloc += f":{parts.port}"
+            return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    except Exception:
+        pass
+    return raw
+
 # YouTube Bot Bypass & Cookies (Secure In-Memory Handling)
 def normalize_netscape_cookies(raw_text: str) -> Optional[str]:
     """

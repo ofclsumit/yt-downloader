@@ -512,65 +512,85 @@ def extract_video_metadata(
     last_stderr = ""
     last_stdout = ""
 
+    has_proxy = bool(config.YTDLP_PROXY)
+    max_proxy_attempts = 10 if has_proxy else 1
+    base_slot = abs(hash(job_id)) % 10
+
     with scoped_cookie_file(job_dir) as cookie_file:
         cookie_file_used = bool(cookie_file and os.path.exists(cookie_file))
         active_strategies = get_client_strategies(has_cookies=cookie_configured)
         client_results = {}
 
-        for strategy in active_strategies:
-            client_name = strategy["name"]
-            player_client = strategy["player_client"]
-            diag_logger = YtDlpDiagnosticLogger()
+        for attempt in range(1, max_proxy_attempts + 1):
+            slot = ((base_slot + attempt - 1) % 10) + 1
+            session_id_str = str(slot) if has_proxy else "1"
+            active_proxy = config.get_job_proxy(session_id=session_id_str) if has_proxy else None
 
-            ydl_opts = {
-                'skip_download': True,
-                'extract_flat': False,
-                'quiet': False,
-                'logger': diag_logger,
-                'no_warnings': False,
-                'js_runtimes': {'deno': {}, 'node': {}},
-                'remote_components': ['ejs:github'],
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': player_client,
-                    }
-                },
-            }
-            if config.FFMPEG_EXE:
-                ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
-            if config.YTDLP_PROXY:
-                ydl_opts['proxy'] = config.YTDLP_PROXY
-            if cookie_file and client_name not in ("visionos", "tv_embedded"):
-                ydl_opts['cookiefile'] = cookie_file
+            for strategy in active_strategies:
+                client_name = strategy["name"]
+                player_client = strategy["player_client"]
+                diag_logger = YtDlpDiagnosticLogger()
 
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    if info:
-                        info["_selected_client"] = client_name
-                        logger.info(f"[JOB {job_id}] Metadata extraction SUCCESS using client '{client_name}'.")
-                        logger.info(
-                            f"cookie_configured={'true' if cookie_configured else 'false'} "
-                            f"cookie_file_valid={'true' if cookie_valid else 'false'} "
-                            f"cookie_file_used={'true' if cookie_file_used else 'false'} "
-                            f"youtube_metadata_extraction=SUCCESS "
-                            f"classification=NONE"
-                        )
-                        return info
-            except Exception as e:
-                full_stderr = diag_logger.get_stderr()
-                combined_err = f"{e}\n{full_stderr}".strip()
-                code, msg = classify_ytdlp_error(combined_err)
-                client_results[client_name] = f"{code}: {sanitize_log_message(str(e))[:60]}"
-                last_error = e
-                last_code = code
-                last_msg = msg
-                last_stderr = full_stderr
-                last_stdout = diag_logger.get_stdout()
+                ydl_opts = {
+                    'skip_download': True,
+                    'extract_flat': False,
+                    'quiet': False,
+                    'logger': diag_logger,
+                    'no_warnings': False,
+                    'js_runtimes': {'deno': {}, 'node': {}},
+                    'remote_components': ['ejs:github'],
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': player_client,
+                        }
+                    },
+                }
+                if config.FFMPEG_EXE:
+                    ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
+                if active_proxy:
+                    ydl_opts['proxy'] = active_proxy
+                    ydl_opts['downloader_args'] = {'ffmpeg': ['-http_proxy', active_proxy]}
+                if cookie_file and client_name not in ("visionos", "tv_embedded"):
+                    ydl_opts['cookiefile'] = cookie_file
 
-                logger.warning(
-                    f"[JOB {job_id}] Client '{client_name}' extraction failed ({code}): {sanitize_log_message(str(e)[:120])}. Attempting next client..."
-                )
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        if info:
+                            info["_selected_client"] = client_name
+                            if active_proxy:
+                                info["_working_proxy"] = active_proxy
+                                info["_working_session"] = session_id_str
+                            logger.info(f"[JOB {job_id}] Metadata extraction SUCCESS using client '{client_name}'.")
+                            logger.info(
+                                f"cookie_configured={'true' if cookie_configured else 'false'} "
+                                f"cookie_file_valid={'true' if cookie_valid else 'false'} "
+                                f"cookie_file_used={'true' if cookie_file_used else 'false'} "
+                                f"youtube_metadata_extraction=SUCCESS "
+                                f"classification=NONE"
+                            )
+                            return info
+                except Exception as e:
+                    full_stderr = diag_logger.get_stderr()
+                    combined_err = f"{e}\n{full_stderr}".strip()
+                    code, msg = classify_ytdlp_error(combined_err)
+                    client_results[client_name] = f"{code}: {sanitize_log_message(str(e))[:60]}"
+                    last_error = e
+                    last_code = code
+                    last_msg = msg
+                    last_stderr = full_stderr
+                    last_stdout = diag_logger.get_stdout()
+
+                    logger.warning(
+                        f"[JOB {job_id}] Client '{client_name}' extraction failed ({code}): {sanitize_log_message(str(e)[:120])}. Attempting next client..."
+                    )
+                    if has_proxy and code in ("BOT_DETECTION", "RATE_LIMITED"):
+                        break
+
+            if has_proxy and attempt < max_proxy_attempts and last_code in ("BOT_DETECTION", "RATE_LIMITED", "NETWORK_ERROR"):
+                logger.info(f"[JOB {job_id}] Proxy slot {session_id_str} encountered {last_code}. Rotating to fresh proxy slot (Attempt {attempt+1}/{max_proxy_attempts})...")
+                import time
+                time.sleep(0.5)
 
         logger.info(
             f"cookie_configured={'true' if cookie_configured else 'false'} "
@@ -717,52 +737,76 @@ def process_job(job_data: Dict[str, Any]) -> None:
         last_dl_msg = ""
         last_dl_stderr = ""
 
-        with scoped_cookie_file(job_dir) as cookie_file:
-            for strategy in ordered_strategies:
-                client_name = strategy["name"]
-                player_client = strategy["player_client"]
-                dl_logger = YtDlpDiagnosticLogger()
-                ydl_opts = {
-                    'format': 'bv*[height<=1080]+ba/b/best',
-                    'outtmpl': raw_download_template,
-                    'merge_output_format': 'mp4',
-                    'progress_hooks': [progress_hook],
-                    'quiet': False,
-                    'logger': dl_logger,
-                    'no_warnings': False,
-                    'js_runtimes': {'deno': {}, 'node': {}},
-                    'remote_components': ['ejs:github'],
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': player_client,
-                        }
-                    },
-                    'download_ranges': yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)]),
-                    'force_keyframes_at_cuts': False,
-                }
-                if config.FFMPEG_EXE:
-                    ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
-                if config.YTDLP_PROXY:
-                    ydl_opts['proxy'] = config.YTDLP_PROXY
-                if cookie_file and client_name not in ("visionos", "tv_embedded"):
-                    ydl_opts['cookiefile'] = cookie_file
+        working_proxy = info.get("_working_proxy") or (
+            config.get_job_proxy(session_id="1") if config.YTDLP_PROXY else None
+        )
+        working_slot = int(info.get("_working_session") or 1)
+        max_dl_attempts = 5 if working_proxy else 1
 
-                try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
-                    download_success = True
-                    active_client = client_name
+        with scoped_cookie_file(job_dir) as cookie_file:
+            for dl_attempt in range(1, max_dl_attempts + 1):
+                if download_success:
                     break
-                except Exception as dl_err:
-                    full_stderr = dl_logger.get_stderr()
-                    code, msg = classify_ytdlp_error(f"{dl_err}\n{full_stderr}".strip())
-                    last_dl_error = dl_err
-                    last_dl_code = code
-                    last_dl_msg = msg
-                    last_dl_stderr = full_stderr
-                    logger.warning(
-                        f"[JOB {job_id}] Download with client '{client_name}' failed ({code}). Attempting next client..."
+                current_proxy = working_proxy
+                if working_proxy and dl_attempt > 1:
+                    next_slot = ((working_slot + dl_attempt - 2) % 10) + 1
+                    current_proxy = config.get_job_proxy(session_id=str(next_slot))
+
+                for strategy in ordered_strategies:
+                    client_name = strategy["name"]
+                    player_client = strategy["player_client"]
+                    dl_logger = YtDlpDiagnosticLogger()
+                    ydl_opts = {
+                        'format': 'bv*[height<=1080]+ba/b/best',
+                        'outtmpl': raw_download_template,
+                        'merge_output_format': 'mp4',
+                        'progress_hooks': [progress_hook],
+                        'quiet': False,
+                        'logger': dl_logger,
+                        'no_warnings': False,
+                        'js_runtimes': {'deno': {}, 'node': {}},
+                        'remote_components': ['ejs:github'],
+                        'extractor_args': {
+                            'youtube': {
+                                'player_client': player_client,
+                            }
+                        },
+                        'download_ranges': yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)]),
+                        'force_keyframes_at_cuts': False,
+                    }
+                    if config.FFMPEG_EXE:
+                        ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
+                    if current_proxy:
+                        ydl_opts['proxy'] = current_proxy
+                        ydl_opts['downloader_args'] = {'ffmpeg': ['-http_proxy', current_proxy]}
+                    if cookie_file and client_name not in ("visionos", "tv_embedded"):
+                        ydl_opts['cookiefile'] = cookie_file
+
+                    try:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            ydl.download([url])
+                        download_success = True
+                        active_client = client_name
+                        break
+                    except Exception as dl_err:
+                        full_stderr = dl_logger.get_stderr()
+                        code, msg = classify_ytdlp_error(f"{dl_err}\n{full_stderr}".strip())
+                        last_dl_error = dl_err
+                        last_dl_code = code
+                        last_dl_msg = msg
+                        last_dl_stderr = full_stderr
+                        logger.warning(
+                            f"[JOB {job_id}] Download with client '{client_name}' failed ({code}): {sanitize_log_message(str(dl_err)[:120])}. Attempting next client..."
+                        )
+                        if working_proxy and code in ("BOT_DETECTION", "RATE_LIMITED"):
+                            break
+
+                if not download_success and working_proxy and dl_attempt < max_dl_attempts:
+                    logger.info(
+                        f"[JOB {job_id}] Download attempt {dl_attempt} encountered {last_dl_code}. Rotating proxy session and retrying..."
                     )
+                    import time
+                    time.sleep(1)
 
         if not download_success:
             diagnostics.log_job_failure_diagnostics(
