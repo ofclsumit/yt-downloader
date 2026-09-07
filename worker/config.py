@@ -61,28 +61,25 @@ R2_ENDPOINT_URL = clean_env("R2_ENDPOINT_URL") or (
 YTDLP_PROXY = clean_env("YTDLP_PROXY") or clean_env("HTTP_PROXY") or clean_env("HTTPS_PROXY")
 
 # YouTube Bot Bypass & Cookies (Secure In-Memory Handling)
-def _parse_cookie_content(raw_val: str) -> Optional[str]:
+def normalize_netscape_cookies(raw_text: str) -> Optional[str]:
     """
-    Safely parses cookie content from environment variable.
-    Supports:
-    1. Base64-encoded Netscape cookie file (Recommended format)
-    2. Raw multiline Netscape / Mozilla cookie format
-    3. Literal-escaped newlines (\\n, \\t)
-    Returns decoded cookie string or None if empty/invalid.
+    Normalizes any cookie input (Netscape, space-separated, JSON, Base64) into
+    a strictly valid, tab-separated Netscape HTTP Cookie file that Python's
+    MozillaCookieJar and yt-dlp will parse without warnings or errors.
     """
-    if not raw_val:
+    if not raw_text:
         return None
-    val = raw_val.strip().strip('"').strip("'")
+    val = raw_text.strip().strip('"').strip("'")
     if not val:
         return None
 
-    # Check for JSON cookie format (e.g. from Cookie-Editor extension)
+    # Handle JSON format (e.g. Cookie-Editor extension)
     if val.startswith("[") and val.endswith("]"):
         try:
             import json
             cookie_list = json.loads(val)
             if isinstance(cookie_list, list) and len(cookie_list) > 0 and isinstance(cookie_list[0], dict):
-                lines = ["# Netscape HTTP Cookie File"]
+                lines = ["# Netscape HTTP Cookie File", "# Converted from JSON"]
                 for c in cookie_list:
                     dom = c.get("domain", ".youtube.com")
                     sub = "TRUE" if dom.startswith(".") else "FALSE"
@@ -92,26 +89,61 @@ def _parse_cookie_content(raw_val: str) -> Optional[str]:
                     name = c.get("name", "")
                     v = c.get("value", "")
                     lines.append(f"{dom}\t{sub}\t{p}\t{sec}\t{exp}\t{name}\t{v}")
-                return "\n".join(lines)
+                return "\n".join(lines) + "\n"
         except Exception:
             pass
 
-    # Check for Base64 encoding
-    if not val.startswith("#") and "youtube.com" not in val:
+    # Handle Base64 encoding
+    if not val.startswith("#") and "youtube.com" not in val and "\t" not in val and " " not in val:
         try:
             import base64
             decoded = base64.b64decode(val).decode("utf-8", errors="ignore")
             if "youtube.com" in decoded or "Netscape" in decoded or "\t" in decoded:
-                return decoded
+                val = decoded
         except Exception:
             pass
 
-    # Unescape literal backslash-n / backslash-t if passed from single-line env variable
+    # Unescape literal backslash-n / backslash-t
     if "\\n" in val:
         val = val.replace("\\n", "\n").replace("\\t", "\t")
 
-    val = val.replace("\r\n", "\n")
-    return val if val else None
+    lines = [l.strip() for l in val.splitlines() if l.strip()]
+    if not lines:
+        return None
+
+    import re
+    valid_entries = ["# Netscape HTTP Cookie File", "# Normalized by yt-downloader worker"]
+    found_cookie = False
+
+    for line in lines:
+        if line.startswith("#"):
+            continue
+        # Split by tab first, fallback to multiple spaces
+        if "\t" in line:
+            parts = line.split("\t")
+        else:
+            parts = re.split(r'\s{2,}|\t', line)
+
+        if len(parts) >= 6:
+            domain = parts[0]
+            sub = parts[1].upper() if len(parts) > 1 and parts[1].upper() in ("TRUE", "FALSE") else ("TRUE" if domain.startswith(".") else "FALSE")
+            path = parts[2] if len(parts) > 2 else "/"
+            sec = parts[3].upper() if len(parts) > 3 and parts[3].upper() in ("TRUE", "FALSE") else "TRUE"
+            exp = parts[4] if len(parts) > 4 and parts[4].isdigit() else "2147483647"
+            name = parts[5] if len(parts) > 5 else ""
+            value = parts[6] if len(parts) > 6 else ""
+            valid_entries.append(f"{domain}\t{sub}\t{path}\t{sec}\t{exp}\t{name}\t{value}")
+            found_cookie = True
+
+    if found_cookie:
+        return "\n".join(valid_entries) + "\n"
+
+    # Fallback: ensure header is present even if line format is non-standard
+    if not val.startswith("# Netscape HTTP Cookie File"):
+        val = "# Netscape HTTP Cookie File\n" + val
+    return val
+
+_parse_cookie_content = normalize_netscape_cookies
 
 _RAW_COOKIES = clean_env("YTDLP_COOKIES") or clean_env("YTDLP_COOKIES_B64")
 _PARSED_COOKIES = _parse_cookie_content(_RAW_COOKIES)

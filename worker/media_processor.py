@@ -587,7 +587,9 @@ def extract_video_metadata(
             raw_stdout=last_stdout,
             exit_code=getattr(last_error, "code", None)
         )
-        debug_info = f"[Diagnostics: {config.get_secret_debug_info()}, Cookies: {config.get_cookie_source()}]"
+        clean_last_err = sanitize_log_message(str(last_error))[:150]
+        clean_stderr = sanitize_log_message(last_stderr.splitlines()[-1] if last_stderr else "")[:150]
+        debug_info = f"[Diagnostics: {config.get_secret_debug_info()}, Cookies: {config.get_cookie_source()}, Err: {clean_last_err}, StderrLast: {clean_stderr}]"
         raise MediaProcessingError(last_code, f"{last_msg} {debug_info}")
 
 def run_ffmpeg_trim(
