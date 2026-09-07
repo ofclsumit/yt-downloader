@@ -96,3 +96,101 @@ Follow this guide to deploy each component of the distributed architecture acros
 - [ ] Select a 15-second range and click **Generate Clip**.
 - [ ] Observe the Render Worker logs: verify section-aware download, FFmpeg trimming, and R2 upload.
 - [ ] Click **Download MP4 Clip** in the browser: verify the download initiates directly from Cloudflare R2 without routing through Vercel.
+
+---
+
+## 7. Configuring YTDLP_COOKIES for Datacenter IP Bot Bypass
+
+### Why Cookies are Required on Cloud Providers
+Cloud hosting providers (Render, AWS, GCP, DigitalOcean) use datacenter IP ranges. YouTube enforces automated scraping countermeasures against unauthenticated requests originating from datacenter subnets, returning:
+`Sign in to confirm you're not a bot` (`BOT_DETECTION`).
+
+Configuring `YTDLP_COOKIES` provides `yt-dlp` with authenticated session credentials, allowing downloads to process seamlessly without challenges.
+
+> [!WARNING]
+> **Security Notice**: YouTube cookies contain active authentication session material.
+> - Never commit cookies or `cookies.txt` to Git.
+> - Never paste cookies into public chat, logs, or repositories.
+> - Always use a dedicated/secondary Google account rather than your primary personal account for automated extraction.
+
+---
+
+### How to Export YouTube Cookies (60 Seconds)
+
+1. Open your browser (Chrome, Brave, Edge, or Firefox) signed in to your YouTube/Google account.
+2. Install the open-source extension **[Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)** (or export via browser DevTools).
+3. Navigate to `https://www.youtube.com`.
+4. Click the extension icon and click **Export** to save `cookies.txt`.
+
+---
+
+### How to Format & Set `YTDLP_COOKIES` in Render
+
+#### Option A: Base64 Format (Recommended — Avoids Newline Escaping Issues)
+Encode the exported `cookies.txt` into a single Base64 string:
+
+- **Linux / macOS**:
+  ```bash
+  base64 -w 0 cookies.txt
+  ```
+- **Windows (PowerShell)**:
+  ```powershell
+  [Convert]::ToBase64String([IO.File]::ReadAllBytes("cookies.txt")) | Set-Clipboard
+  ```
+
+#### Option B: Raw Multiline Format
+Copy the entire text from `cookies.txt` (starting with `# Netscape HTTP Cookie File`).
+
+---
+
+### Setting `YTDLP_COOKIES` in Render Dashboard
+
+1. Navigate to your Render Web Service / Worker:
+   `https://dashboard.render.com/web/srv-daef9emq1p3s7393ofr0`
+2. Click **Environment** in the left sidebar.
+3. Click **Add Environment Variable**:
+   - **Key**: `YTDLP_COOKIES`
+   - **Value**: Paste your Base64 string or raw Netscape cookie content.
+4. Click **Save Changes**. Render will automatically redeploy the worker.
+
+---
+
+### How to Verify the Worker Sees Cookies (Zero Secret Leakage)
+
+Inspect the deployment logs in the Render console. Look for the startup diagnostic line:
+```
+[INFO] worker: YouTube Cookies Configured: YES (Loaded from YTDLP_COOKIES)
+```
+- **Zero Exposure Guarantee**: The worker **never** logs cookie contents, secret tokens, or file paths.
+- If the variable is unset or removed, the log will display:
+  ```
+  [INFO] worker: YouTube Cookies Configured: NO (Unauthenticated)
+  ```
+
+---
+
+### How to Update or Rotate Cookies
+
+When your session cookies eventually expire (usually after 6–12 months of inactivity, or if you sign out):
+1. Export fresh cookies from `https://www.youtube.com`.
+2. Convert to Base64 (or copy text).
+3. Go to Render **Environment** > Edit `YTDLP_COOKIES` > paste new value > **Save Changes**.
+
+---
+
+### How to Remove Cookies
+
+To run the worker in unauthenticated mode:
+1. Go to Render **Environment**.
+2. Click the trash icon next to `YTDLP_COOKIES`.
+3. Click **Save Changes**.
+
+---
+
+### How `BOT_DETECTION` is Reported
+
+If YouTube flags a request and cookies are not configured (or have expired):
+1. The worker immediately halts execution without wasteful retries and marks the job `FAILED` with `error_code = "BOT_DETECTION"`.
+2. The user-facing UI displays the sanitized message:
+   > *"YouTube is currently blocking automated requests from the processing server. The administrator needs to configure a valid yt-dlp cookie session."*
+3. Internal server secrets, cookie formats, or token errors are never shown to end users.

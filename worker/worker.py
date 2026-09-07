@@ -126,7 +126,8 @@ def start_health_server(port: int):
 
 def main():
     logger.info("=" * 60)
-    logger.info("Starting Render Background Worker for YouTube Timestamp Clipper")
+    import yt_dlp
+    logger.info(f"yt-dlp Engine Version: {getattr(yt_dlp, '__version__', 'unknown')}")
     logger.info(f"Worker Concurrency Limit: {config.WORKER_CONCURRENCY}")
     logger.info(f"Max Clip Duration: {config.MAX_CLIP_DURATION_SECONDS}s")
     logger.info(f"Clip Expiration: {config.CLIP_EXPIRATION_HOURS} hour(s)")
@@ -135,6 +136,9 @@ def main():
     logger.info(f"Redis TCP Configured: {'YES' if config.REDIS_URL else 'NO (REDIS_URL missing)'}")
     logger.info(f"Upstash REST Configured: {'YES' if (config.UPSTASH_REST_URL and config.UPSTASH_REST_TOKEN) else 'NO'}")
     logger.info(f"R2 Storage Configured: {'YES' if (config.R2_ACCOUNT_ID and config.R2_ACCESS_KEY_ID) else 'NO (R2 credentials missing)'}")
+    logger.info(f"YouTube Cookies Configured: {'YES (Loaded from YTDLP_COOKIES)' if config.has_cookies() else 'NO (Unauthenticated)'}")
+    if config.YTDLP_PROXY:
+        logger.info("YouTube Proxy Configured: YES")
     logger.info("=" * 60)
 
     # If running as a Render Web Service, start HTTP health check listener

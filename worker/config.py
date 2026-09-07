@@ -6,6 +6,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 # Base Paths
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -56,19 +57,63 @@ R2_ENDPOINT_URL = clean_env("R2_ENDPOINT_URL") or (
     f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCOUNT_ID else ""
 )
 
-# YouTube Bot Bypass & Cookies
-YTDLP_COOKIES_TEXT = clean_env("YTDLP_COOKIES")
+# Optional Proxy Support
+YTDLP_PROXY = clean_env("YTDLP_PROXY") or clean_env("HTTP_PROXY") or clean_env("HTTPS_PROXY")
+
+# YouTube Bot Bypass & Cookies (Secure In-Memory Handling)
+def _parse_cookie_content(raw_val: str) -> Optional[str]:
+    """
+    Safely parses cookie content from environment variable.
+    Supports:
+    1. Base64-encoded Netscape cookie file (Recommended format)
+    2. Raw multiline Netscape / Mozilla cookie format
+    3. Literal-escaped newlines (\\n, \\t)
+    Returns decoded cookie string or None if empty/invalid.
+    """
+    if not raw_val:
+        return None
+    val = raw_val.strip().strip('"').strip("'")
+    if not val:
+        return None
+
+    # Check for Base64 encoding
+    if not val.startswith("#") and "youtube.com" not in val:
+        try:
+            import base64
+            decoded = base64.b64decode(val).decode("utf-8", errors="ignore")
+            if "youtube.com" in decoded or "Netscape" in decoded or "\t" in decoded:
+                return decoded
+        except Exception:
+            pass
+
+    # Unescape literal backslash-n / backslash-t if passed from single-line env variable
+    if "\\n" in val:
+        val = val.replace("\\n", "\n").replace("\\t", "\t")
+
+    return val if val else None
+
+_RAW_COOKIES = clean_env("YTDLP_COOKIES") or clean_env("YTDLP_COOKIES_B64")
+_PARSED_COOKIES = _parse_cookie_content(_RAW_COOKIES)
+_COOKIES_PATH = clean_env("YTDLP_COOKIES_PATH")
+
+def get_cookie_content() -> Optional[str]:
+    """Returns the in-memory cookie content, or reads from YTDLP_COOKIES_PATH if set."""
+    if _PARSED_COOKIES:
+        return _PARSED_COOKIES
+    if _COOKIES_PATH and os.path.exists(_COOKIES_PATH):
+        try:
+            with open(_COOKIES_PATH, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        except Exception:
+            return None
+    return None
+
+def has_cookies() -> bool:
+    """Returns True if valid cookie credentials are configured."""
+    return get_cookie_content() is not None
+
+# Backward compatibility alias - DO NOT use for writing global files
 YTDLP_COOKIES_FILE = None
-if YTDLP_COOKIES_TEXT:
-    try:
-        LOCAL_TEMP_DIR.mkdir(parents=True, exist_ok=True)
-        cookie_p = LOCAL_TEMP_DIR / "cookies.txt"
-        cookie_p.write_text(YTDLP_COOKIES_TEXT, encoding="utf-8")
-        YTDLP_COOKIES_FILE = str(cookie_p)
-    except Exception:
-        pass
-elif clean_env("YTDLP_COOKIES_PATH") and os.path.exists(clean_env("YTDLP_COOKIES_PATH")):
-    YTDLP_COOKIES_FILE = clean_env("YTDLP_COOKIES_PATH")
 
 
 # Limits & Operational Parameters

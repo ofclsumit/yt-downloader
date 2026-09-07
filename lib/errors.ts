@@ -15,6 +15,7 @@ export const ERROR_CODES = {
   PROCESSING_FAILED: 'PROCESSING_FAILED',
   STORAGE_FAILED: 'STORAGE_FAILED',
   RATE_LIMITED: 'RATE_LIMITED',
+  BOT_DETECTION: 'BOT_DETECTION',
   UNKNOWN_ERROR: 'UNKNOWN_ERROR',
 } as const;
 
@@ -32,6 +33,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   PROCESSING_FAILED: 'An error occurred while trimming or encoding the media file.',
   STORAGE_FAILED: 'Failed to store or retrieve the generated clip from cloud storage.',
   RATE_LIMITED: 'Too many requests. Please wait a moment before creating another clip.',
+  BOT_DETECTION: 'YouTube is currently blocking automated requests from the processing server. The administrator needs to configure a valid yt-dlp cookie session.',
   UNKNOWN_ERROR: 'Something went wrong while processing your clip. Please try again.',
 };
 

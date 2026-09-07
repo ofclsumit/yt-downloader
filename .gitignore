@@ -25,11 +25,18 @@ venv/
 
 # Environment and logs
 .env
+.env.*
 .env.local
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .DS_Store
 
+# Cookies & Credentials
+cookies.txt
+*.cookies.txt
+.cookies
+.cookies.*
+*.cookies
+
 .vercel
-.env*
