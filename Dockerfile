@@ -11,10 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     nodejs \
+    && (which node >/dev/null 2>&1 || ln -s $(which nodejs) /usr/local/bin/node) \
     && rm -rf /var/lib/apt/lists/*
 
-# Verify FFmpeg installation
-RUN ffmpeg -version
+# Verify FFmpeg and Node.js installation
+RUN ffmpeg -version && (node -v || nodejs -v)
 
 WORKDIR /app
 

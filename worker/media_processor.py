@@ -41,6 +41,8 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
         return "DOWNLOAD_FAILED", "YouTube is temporarily throttling requests. Please try again shortly."
     if "sign in to confirm you’re not a bot" in lower_err or "sign in to confirm you're not a bot" in lower_err:
         return "BOT_DETECTION", "YouTube is requesting bot verification for datacenter IPs. Please configure YTDLP_COOKIES."
+    if "requested format is not available" in lower_err:
+        return "DOWNLOAD_FAILED", "Requested video format stream is not available. Using universal stream fallback."
     return "DOWNLOAD_FAILED", f"Media extraction failed: {err_str[:200]}"
 
 def extract_video_metadata(url: str) -> Dict[str, Any]:
@@ -50,11 +52,9 @@ def extract_video_metadata(url: str) -> Dict[str, Any]:
         'extract_flat': False,
         'quiet': True,
         'no_warnings': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios'],
-            }
-        },
+        'format': 'bv*+ba/b',
+        'js_runtimes': {'node': {}, 'deno': {}},
+        'remote_components': ['ejs:github'],
     }
     if config.FFMPEG_EXE:
         ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
@@ -68,6 +68,15 @@ def extract_video_metadata(url: str) -> Dict[str, Any]:
                 raise MediaProcessingError("VIDEO_UNAVAILABLE", "Unable to extract video information.")
             return info
     except yt_dlp.utils.DownloadError as e:
+        # Fallback with mobile/alternate client if standard extraction fails
+        try:
+            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'web']}}
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl_fb:
+                info = ydl_fb.extract_info(url, download=False)
+                if info:
+                    return info
+        except Exception:
+            pass
         code, msg = classify_ytdlp_error(str(e))
         raise MediaProcessingError(code, msg)
     except Exception as e:
@@ -204,17 +213,14 @@ def process_job(job_data: Dict[str, Any]) -> None:
                     db.update_job_progress(job_id, min(70, 40 + pct))
 
         ydl_opts = {
-            'format': 'bestvideo+bestaudio/best',
+            'format': 'bv*+ba/b',
             'outtmpl': raw_download_template,
             'merge_output_format': 'mp4',
             'progress_hooks': [progress_hook],
             'quiet': True,
             'no_warnings': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'ios'],
-                }
-            },
+            'js_runtimes': {'node': {}, 'deno': {}},
+            'remote_components': ['ejs:github'],
             # Documented yt-dlp section downloading function
             'download_ranges': yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)]),
             'force_keyframes_at_cuts': False,
@@ -229,9 +235,9 @@ def process_job(job_data: Dict[str, Any]) -> None:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
         except Exception as dl_err:
-            logger.warning(f"[JOB {job_id}] Section download error: {dl_err}. Retrying with alternate client format 'best'...")
-            ydl_opts['format'] = 'best'
-            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'android']}}
+            logger.warning(f"[JOB {job_id}] Primary section download error: {dl_err}. Retrying with universal fallback format...")
+            ydl_opts['format'] = 'b/bv*+ba/best'
+            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'web']}}
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
