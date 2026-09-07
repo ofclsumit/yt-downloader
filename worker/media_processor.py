@@ -95,14 +95,18 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
     Classifies raw yt-dlp error output into standardized error codes:
     - JS_RUNTIME_MISSING
     - EJS_MISSING
+    - COOKIE_NOT_USED
     - COOKIE_INVALID
     - COOKIE_EXPIRED
+    - PO_TOKEN_REQUIRED
     - BOT_DETECTION
+    - LOGIN_REQUIRED
     - VIDEO_AGE_RESTRICTED
     - VIDEO_PRIVATE
     - VIDEO_REGION_RESTRICTED
     - VIDEO_UNAVAILABLE
     - FORMAT_ERROR
+    - RATE_LIMITED
     - NETWORK_ERROR
     - YTDLP_ERROR
     - UNKNOWN_ERROR
@@ -138,7 +142,22 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
             "YouTube challenge solver component (yt-dlp-ejs) is missing. Administrator must install yt-dlp-ejs."
         )
 
-    # 3. Cookies Invalid
+    # 3. Cookies Not Used / Ignored
+    if any(k in lower for k in [
+        "cookie file not found",
+        "cookies were not used",
+        "cookie not used",
+        "cookies are ignored",
+        "failed to load cookies",
+        "ignoring cookies",
+        "cookie file empty",
+    ]):
+        return (
+            "COOKIE_NOT_USED",
+            "The configured cookie file was not accepted or loaded by yt-dlp."
+        )
+
+    # 4. Cookies Invalid
     if any(k in lower for k in [
         "could not parse cookies",
         "cookie is invalid",
@@ -152,7 +171,7 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
             "The configured YouTube cookie session is invalid or malformed. Please verify cookies.txt format."
         )
 
-    # 4. Cookies Expired
+    # 5. Cookies Expired
     if any(k in lower for k in [
         "cookie has expired",
         "expired cookie",
@@ -166,15 +185,33 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
             "The YouTube cookie session has expired. Please re-export active cookies from your browser."
         )
 
-    # 5. YouTube Bot Detection
+    # 6. PO Token / Proof of Origin Required
+    if any(k in lower for k in [
+        "po token",
+        "po_token",
+        "potoken",
+        "proof of origin",
+        "visitordata",
+        "visitor_data",
+        "gvs token",
+    ]):
+        return (
+            "PO_TOKEN_REQUIRED",
+            "YouTube requires a Proof of Origin (PO) token for automated requests from datacenter IPs."
+        )
+
+    # 7. YouTube Bot Detection / Captcha
     bot_triggers = [
         "sign in to confirm you’re not a bot",
         "sign in to confirm you're not a bot",
+        "confirm you're not a bot",
+        "confirm you’re not a bot",
         "not a bot",
         "captcha",
         "bot verification",
-        "login_required",
+        "bot check",
         "automated requests",
+        "unusual traffic",
     ]
     if any(t in lower for t in bot_triggers):
         return (
@@ -182,7 +219,22 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
             "YouTube is currently blocking automated requests from the processing server. The administrator needs to configure a valid yt-dlp cookie session."
         )
 
-    # 6. Age Restricted
+    # 8. Login Required (Members-only, paid, private requiring login)
+    if any(k in lower for k in [
+        "sign in to view this video",
+        "this video requires payment",
+        "this video is only available to",
+        "members-only",
+        "join this channel to get access",
+        "login required",
+        "sign in with your google account",
+    ]):
+        return (
+            "LOGIN_REQUIRED",
+            "YouTube sign-in is required to view this video."
+        )
+
+    # 9. Age Restricted
     if any(k in lower for k in [
         "sign in to confirm your age",
         "age-restricted",
@@ -194,7 +246,7 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
             "This video is age-restricted and requires account verification."
         )
 
-    # 7. Private Video
+    # 10. Private Video
     if any(k in lower for k in [
         "private video",
         "sign in if you've been granted access",
@@ -205,7 +257,7 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
             "This video is private and cannot be processed."
         )
 
-    # 8. Region / Geo Restricted
+    # 11. Region / Geo Restricted
     if any(k in lower for k in [
         "not available in your country",
         "geo-restricted",
@@ -218,7 +270,7 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
             "This video is geographically restricted and unavailable in the processing region."
         )
 
-    # 9. Video Unavailable / Deleted
+    # 12. Video Unavailable / Deleted
     if any(k in lower for k in [
         "video unavailable",
         "this video does not exist",
@@ -231,7 +283,7 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
             "This video is unavailable or has been removed."
         )
 
-    # 10. Format Error
+    # 13. Format Error
     if any(k in lower for k in [
         "requested format is not available",
         "the page needs to be reloaded",
@@ -244,10 +296,21 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
             "Requested video format stream is not available from YouTube."
         )
 
-    # 11. Network Error / Rate Limit
+    # 14. Rate Limited (HTTP 429)
     if any(k in lower for k in [
         "too many requests",
         "http error 429",
+        "rate-limit",
+        "rate limited",
+        "429 too many requests",
+    ]):
+        return (
+            "RATE_LIMITED",
+            "YouTube rate-limited automated requests. Please wait a moment before trying again."
+        )
+
+    # 15. Network Error
+    if any(k in lower for k in [
         "connection refused",
         "timed out",
         "timeout",
@@ -259,10 +322,10 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
     ]):
         return (
             "NETWORK_ERROR",
-            "Network or rate-limit error communicating with YouTube. Please try again shortly."
+            "Network error communicating with YouTube. Please try again shortly."
         )
 
-    # 12. Generic yt-dlp error
+    # 16. Generic yt-dlp error
     if "error:" in lower or "yt_dlp" in lower or "ytdlp" in lower:
         return (
             "YTDLP_ERROR",
@@ -309,11 +372,23 @@ def extract_video_metadata(
         if cookie_file:
             ydl_opts['cookiefile'] = cookie_file
 
+        cookie_configured = bool(config.has_cookies())
+        raw_cookies = config.get_cookie_content()
+        cookie_valid, _ = diagnostics.verify_cookie_format(raw_cookies)
+        cookie_file_used = bool(cookie_file and os.path.exists(cookie_file))
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if not info:
                     raise MediaProcessingError("VIDEO_UNAVAILABLE", "Unable to extract video information.")
+                logger.info(
+                    f"cookie_configured={'true' if cookie_configured else 'false'} "
+                    f"cookie_file_valid={'true' if cookie_valid else 'false'} "
+                    f"cookie_file_used={'true' if cookie_file_used else 'false'} "
+                    f"youtube_metadata_extraction=SUCCESS "
+                    f"classification=NONE"
+                )
                 return info
         except Exception as e:
             full_stderr = diag_logger.get_stderr()
@@ -321,15 +396,30 @@ def extract_video_metadata(
             code, msg = classify_ytdlp_error(combined_err)
 
             # Check if fallback client succeeds
-            if code not in ("BOT_DETECTION", "COOKIE_INVALID", "COOKIE_EXPIRED", "JS_RUNTIME_MISSING", "EJS_MISSING"):
+            if code not in ("BOT_DETECTION", "COOKIE_INVALID", "COOKIE_EXPIRED", "COOKIE_NOT_USED", "PO_TOKEN_REQUIRED", "JS_RUNTIME_MISSING", "EJS_MISSING"):
                 try:
                     ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'visionos']}}
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl_fb:
                         info = ydl_fb.extract_info(url, download=False)
                         if info:
+                            logger.info(
+                                f"cookie_configured={'true' if cookie_configured else 'false'} "
+                                f"cookie_file_valid={'true' if cookie_valid else 'false'} "
+                                f"cookie_file_used={'true' if cookie_file_used else 'false'} "
+                                f"youtube_metadata_extraction=SUCCESS "
+                                f"classification=NONE"
+                            )
                             return info
                 except Exception:
                     pass
+
+            logger.info(
+                f"cookie_configured={'true' if cookie_configured else 'false'} "
+                f"cookie_file_valid={'true' if cookie_valid else 'false'} "
+                f"cookie_file_used={'true' if cookie_file_used else 'false'} "
+                f"youtube_metadata_extraction=FAILED "
+                f"classification={code}"
+            )
 
             diagnostics.log_job_failure_diagnostics(
                 job_id=job_id,

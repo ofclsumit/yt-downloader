@@ -161,15 +161,31 @@ class TestBotDetectionAndCookies(unittest.TestCase):
         code, _ = classify_ytdlp_error("ERROR: [youtube] 2vYyHb34upc: The page needs to be reloaded.")
         self.assertEqual(code, "FORMAT_ERROR")
 
-        # 11. NETWORK_ERROR
+        # 11. RATE_LIMITED
         code, _ = classify_ytdlp_error("ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests")
+        self.assertEqual(code, "RATE_LIMITED")
+
+        # 12. NETWORK_ERROR
+        code, _ = classify_ytdlp_error("ERROR: Unable to download webpage: <urlopen error timed out>")
         self.assertEqual(code, "NETWORK_ERROR")
 
-        # 12. YTDLP_ERROR
+        # 13. COOKIE_NOT_USED
+        code, _ = classify_ytdlp_error("WARNING: Failed to load cookies: cookie file not found")
+        self.assertEqual(code, "COOKIE_NOT_USED")
+
+        # 14. PO_TOKEN_REQUIRED
+        code, _ = classify_ytdlp_error("ERROR: YouTube requires PO token verification")
+        self.assertEqual(code, "PO_TOKEN_REQUIRED")
+
+        # 15. LOGIN_REQUIRED
+        code, _ = classify_ytdlp_error("ERROR: Sign in to view this video. This video requires payment")
+        self.assertEqual(code, "LOGIN_REQUIRED")
+
+        # 16. YTDLP_ERROR
         code, _ = classify_ytdlp_error("ERROR: [youtube] Internal extractor glitch occurred")
         self.assertEqual(code, "YTDLP_ERROR")
 
-        # 13. UNKNOWN_ERROR
+        # 17. UNKNOWN_ERROR
         code, _ = classify_ytdlp_error("An unexpected internal failure occurred")
         self.assertEqual(code, "UNKNOWN_ERROR")
 

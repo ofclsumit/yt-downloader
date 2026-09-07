@@ -82,7 +82,7 @@ def test_error_classification():
     assert code3 in ("REGION_RESTRICTED", "VIDEO_REGION_RESTRICTED", "VIDEO_UNAVAILABLE"), f"Got {code3}"
 
     code4, _ = classify_ytdlp_error("HTTP Error 429: Too Many Requests")
-    assert code4 in ("DOWNLOAD_FAILED", "NETWORK_ERROR"), f"Got {code4}"
+    assert code4 in ("DOWNLOAD_FAILED", "NETWORK_ERROR", "RATE_LIMITED"), f"Got {code4}"
     print("  [PASS] Error classifications correctly categorized.")
 
 def test_ffmpeg_trim():
