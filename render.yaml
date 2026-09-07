@@ -5,6 +5,10 @@ services:
     dockerfilePath: Dockerfile
     plan: free
     envVars:
+      - key: PORT
+        value: "10000"
+      - key: YTDLP_PROXY
+        sync: false
       - key: DATABASE_URL
         sync: false
       - key: UPSTASH_REDIS_URL

@@ -118,13 +118,29 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def start_health_server(port: int):
     try:
+        HTTPServer.allow_reuse_address = True
         server = HTTPServer(('0.0.0.0', port), HealthHandler)
-        logger.info(f"Health check HTTP server listening on port {port}")
+        logger.info(f"Health check HTTP server listening on 0.0.0.0:{port}")
         server.serve_forever()
     except Exception as e:
         logger.error(f"Failed to start health server: {e}")
 
 def main():
+    # 1. Start HTTP health check server IMMEDIATELY for Render Web Service Free Tier
+    port_str = os.environ.get("PORT", "10000").strip() or "10000"
+    try:
+        port = int(port_str)
+    except ValueError:
+        port = 10000
+
+    health_thread = threading.Thread(
+        target=start_health_server,
+        args=(port,),
+        daemon=True,
+        name="http-health"
+    )
+    health_thread.start()
+
     from worker import diagnostics
     diagnostics.verify_startup_diagnostics(fail_on_missing_runtime=(os.name != "nt"))
 
@@ -142,21 +158,6 @@ def main():
     if config.YTDLP_PROXY:
         logger.info("YouTube Proxy Configured: YES")
     logger.info("=" * 60)
-
-    # If running as a Render Web Service, start HTTP health check listener
-    port_env = os.environ.get("PORT")
-    if port_env:
-        try:
-            port = int(port_env)
-            health_thread = threading.Thread(
-                target=start_health_server,
-                args=(port,),
-                daemon=True,
-                name="http-health"
-            )
-            health_thread.start()
-        except ValueError:
-            logger.warning(f"Invalid PORT env variable: {port_env}")
 
     # Initialize Database pool
     if config.DATABASE_URL:
