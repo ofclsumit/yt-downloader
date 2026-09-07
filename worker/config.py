@@ -76,6 +76,26 @@ def _parse_cookie_content(raw_val: str) -> Optional[str]:
     if not val:
         return None
 
+    # Check for JSON cookie format (e.g. from Cookie-Editor extension)
+    if val.startswith("[") and val.endswith("]"):
+        try:
+            import json
+            cookie_list = json.loads(val)
+            if isinstance(cookie_list, list) and len(cookie_list) > 0 and isinstance(cookie_list[0], dict):
+                lines = ["# Netscape HTTP Cookie File"]
+                for c in cookie_list:
+                    dom = c.get("domain", ".youtube.com")
+                    sub = "TRUE" if dom.startswith(".") else "FALSE"
+                    p = c.get("path", "/")
+                    sec = "TRUE" if c.get("secure", True) else "FALSE"
+                    exp = str(int(c.get("expirationDate") or c.get("expires") or 2147483647))
+                    name = c.get("name", "")
+                    v = c.get("value", "")
+                    lines.append(f"{dom}\t{sub}\t{p}\t{sec}\t{exp}\t{name}\t{v}")
+                return "\n".join(lines)
+        except Exception:
+            pass
+
     # Check for Base64 encoding
     if not val.startswith("#") and "youtube.com" not in val:
         try:
@@ -90,6 +110,7 @@ def _parse_cookie_content(raw_val: str) -> Optional[str]:
     if "\\n" in val:
         val = val.replace("\\n", "\n").replace("\\t", "\t")
 
+    val = val.replace("\r\n", "\n")
     return val if val else None
 
 _RAW_COOKIES = clean_env("YTDLP_COOKIES") or clean_env("YTDLP_COOKIES_B64")
@@ -99,9 +120,26 @@ _COOKIES_PATH = clean_env("YTDLP_COOKIES_PATH")
 DEFAULT_SECRET_PATHS = [
     Path("/etc/secrets/cookies.txt"),
     Path("/etc/secrets/youtube_cookies.txt"),
+    Path("/etc/secrets/cookies"),
+    Path("/etc/secrets/youtube"),
     Path("/etc/secrets/YTDLP_COOKIES"),
+    Path("/etc/secrets/YTDLP_COOKIES.txt"),
     BASE_DIR / "cookies.txt",
+    BASE_DIR / "youtube_cookies.txt",
 ]
+
+def _discover_secret_files() -> list:
+    """Discovers all candidate cookie files from /etc/secrets/ and default paths."""
+    candidates = list(DEFAULT_SECRET_PATHS)
+    render_secrets_dir = Path("/etc/secrets")
+    if render_secrets_dir.exists() and render_secrets_dir.is_dir():
+        try:
+            for f in render_secrets_dir.iterdir():
+                if f.is_file() and f not in candidates:
+                    candidates.append(f)
+        except Exception:
+            pass
+    return candidates
 
 def get_cookie_content() -> Optional[str]:
     """
@@ -109,7 +147,8 @@ def get_cookie_content() -> Optional[str]:
     Checks:
     1. YTDLP_COOKIES / YTDLP_COOKIES_B64 environment variables
     2. YTDLP_COOKIES_PATH custom file path
-    3. Render Secret Files mounted at /etc/secrets/cookies.txt
+    3. Render Secret Files mounted at /etc/secrets/*
+    4. Local project cookies.txt
     """
     if _PARSED_COOKIES:
         return _PARSED_COOKIES
@@ -124,14 +163,18 @@ def get_cookie_content() -> Optional[str]:
         except Exception:
             pass
 
-    # Check Render Secret Files paths
-    for p in DEFAULT_SECRET_PATHS:
+    # Check Render Secret Files and default locations
+    for p in _discover_secret_files():
         if p.exists() and p.is_file():
             try:
                 with open(p, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read().strip()
                     if content:
-                        return _parse_cookie_content(content) or content
+                        parsed = _parse_cookie_content(content)
+                        if parsed:
+                            return parsed
+                        if "youtube.com" in content or "\t" in content:
+                            return content
             except Exception:
                 pass
 
@@ -147,9 +190,15 @@ def get_cookie_source() -> str:
         return "Environment Variable"
     if _COOKIES_PATH and os.path.exists(_COOKIES_PATH):
         return "Custom Path (YTDLP_COOKIES_PATH)"
-    for p in DEFAULT_SECRET_PATHS:
+    for p in _discover_secret_files():
         if p.exists() and p.is_file():
-            return f"Secret File ({p})"
+            try:
+                with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                    if "youtube.com" in content or "\t" in content or _parse_cookie_content(content):
+                        return f"Secret File ({p})"
+            except Exception:
+                pass
     return "None"
 
 # Backward compatibility alias - DO NOT use for writing global files

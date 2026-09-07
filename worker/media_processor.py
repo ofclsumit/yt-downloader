@@ -125,7 +125,7 @@ def extract_video_metadata(url: str, job_dir: Optional[Path] = None) -> Dict[str
             'remote_components': ['ejs:github'],
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['visionos', 'web', 'android'] if cookie_file else ['visionos', 'android'],
+                    'player_client': ['web', 'web_embedded', 'tv_downgraded', 'android'] if cookie_file else ['visionos', 'android', 'web'],
                 }
             },
         }
@@ -305,7 +305,7 @@ def process_job(job_data: Dict[str, Any]) -> None:
                 'remote_components': ['ejs:github'],
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['visionos', 'web', 'android'] if cookie_file else ['visionos', 'android'],
+                        'player_client': ['web', 'web_embedded', 'tv_downgraded', 'android'] if cookie_file else ['visionos', 'android', 'web'],
                     }
                 },
                 # Documented yt-dlp section downloading function
@@ -333,7 +333,11 @@ def process_job(job_data: Dict[str, Any]) -> None:
                 clean_err = sanitize_log_message(str(dl_err))
                 logger.warning(f"[JOB {job_id}] Primary section download error: {clean_err}. Retrying with universal fallback format...")
                 ydl_opts['format'] = 'b/bv*+ba/best'
-                ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'visionos']}}
+                ydl_opts['extractor_args'] = {
+                    'youtube': {
+                        'player_client': ['web_embedded', 'web', 'android'] if cookie_file else ['android', 'visionos']
+                    }
+                }
                 try:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])

@@ -78,6 +78,13 @@ class TestBotDetectionAndCookies(unittest.TestCase):
         self.assertIsNotNone(parsed_escaped)
         self.assertEqual(parsed_escaped, SAMPLE_NETSCAPE_COOKIE)
 
+        # 2d. JSON format from extensions
+        json_sample = '[{"domain": ".youtube.com", "name": "LOGIN_INFO", "value": "AFmmF2sw", "path": "/", "secure": true, "expirationDate": 1788820864}]'
+        parsed_json = config._parse_cookie_content(json_sample)
+        self.assertIsNotNone(parsed_json)
+        self.assertIn("# Netscape HTTP Cookie File", parsed_json)
+        self.assertIn("LOGIN_INFO", parsed_json)
+
     # --- TEST 3: Invalid Cookie Data (Fail-Safe) ---
     def test_case_3_invalid_cookie_data(self):
         # Corrupted / empty strings should not crash worker
