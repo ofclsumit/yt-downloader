@@ -55,6 +55,11 @@ def extract_video_metadata(url: str) -> Dict[str, Any]:
         'format': 'bv*+ba/b',
         'js_runtimes': {'node': {}, 'deno': {}},
         'remote_components': ['ejs:github'],
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['visionos', 'android'],
+            }
+        },
     }
     if config.FFMPEG_EXE:
         ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
@@ -221,6 +226,11 @@ def process_job(job_data: Dict[str, Any]) -> None:
             'no_warnings': True,
             'js_runtimes': {'node': {}, 'deno': {}},
             'remote_components': ['ejs:github'],
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['visionos', 'android'],
+                }
+            },
             # Documented yt-dlp section downloading function
             'download_ranges': yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)]),
             'force_keyframes_at_cuts': False,
@@ -237,7 +247,7 @@ def process_job(job_data: Dict[str, Any]) -> None:
         except Exception as dl_err:
             logger.warning(f"[JOB {job_id}] Primary section download error: {dl_err}. Retrying with universal fallback format...")
             ydl_opts['format'] = 'b/bv*+ba/best'
-            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'web']}}
+            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'visionos']}}
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
