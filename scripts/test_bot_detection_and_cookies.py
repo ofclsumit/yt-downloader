@@ -119,17 +119,59 @@ class TestBotDetectionAndCookies(unittest.TestCase):
             self.assertNotEqual(code, "STORAGE_ERROR")
             self.assertEqual(msg, expected_msg)
 
-    # --- TEST 5: Normal Successful Extraction Formatting ---
+    # --- TEST 5: Comprehensive Error Classification (13 Categories) ---
     def test_case_5_normal_extraction_error_classification(self):
-        # Ensure genuine errors are preserved
+        # 1. JS_RUNTIME_MISSING
+        code, _ = classify_ytdlp_error("WARNING: No supported JavaScript runtime could be found. Only deno is enabled")
+        self.assertEqual(code, "JS_RUNTIME_MISSING")
+
+        # 2. EJS_MISSING
+        code, _ = classify_ytdlp_error("ERROR: yt-dlp-ejs is required to solve this challenge")
+        self.assertEqual(code, "EJS_MISSING")
+
+        # 3. COOKIE_INVALID
+        code, _ = classify_ytdlp_error("ERROR: Could not parse cookies from provided file")
+        self.assertEqual(code, "COOKIE_INVALID")
+
+        # 4. COOKIE_EXPIRED
+        code, _ = classify_ytdlp_error("ERROR: Your session expired, please login again")
+        self.assertEqual(code, "COOKIE_EXPIRED")
+
+        # 5. BOT_DETECTION
+        code, _ = classify_ytdlp_error("ERROR: Sign in to confirm you're not a bot")
+        self.assertEqual(code, "BOT_DETECTION")
+
+        # 6. VIDEO_AGE_RESTRICTED
+        code, _ = classify_ytdlp_error("ERROR: Sign in to confirm your age. This video is age-restricted")
+        self.assertEqual(code, "VIDEO_AGE_RESTRICTED")
+
+        # 7. VIDEO_PRIVATE
         code, _ = classify_ytdlp_error("ERROR: Private video. Sign in if you've been granted access.")
         self.assertEqual(code, "VIDEO_PRIVATE")
 
+        # 8. VIDEO_REGION_RESTRICTED
         code, _ = classify_ytdlp_error("ERROR: This video is not available in your country")
-        self.assertEqual(code, "REGION_RESTRICTED")
+        self.assertEqual(code, "VIDEO_REGION_RESTRICTED")
 
+        # 9. VIDEO_UNAVAILABLE
         code, _ = classify_ytdlp_error("ERROR: Video unavailable. This video does not exist")
         self.assertEqual(code, "VIDEO_UNAVAILABLE")
+
+        # 10. FORMAT_ERROR
+        code, _ = classify_ytdlp_error("ERROR: [youtube] 2vYyHb34upc: The page needs to be reloaded.")
+        self.assertEqual(code, "FORMAT_ERROR")
+
+        # 11. NETWORK_ERROR
+        code, _ = classify_ytdlp_error("ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests")
+        self.assertEqual(code, "NETWORK_ERROR")
+
+        # 12. YTDLP_ERROR
+        code, _ = classify_ytdlp_error("ERROR: [youtube] Internal extractor glitch occurred")
+        self.assertEqual(code, "YTDLP_ERROR")
+
+        # 13. UNKNOWN_ERROR
+        code, _ = classify_ytdlp_error("An unexpected internal failure occurred")
+        self.assertEqual(code, "UNKNOWN_ERROR")
 
     # --- TEST 6: FFmpeg Frame-Accurate Trim Processing ---
     def test_case_6_ffmpeg_processing(self):
@@ -226,6 +268,26 @@ class TestBotDetectionAndCookies(unittest.TestCase):
         finally:
             config.DEFAULT_SECRET_PATHS = orig_paths
 
+    # --- TEST 11: System Diagnostics & Zero Secret Leakage ---
+    def test_case_11_system_diagnostics(self):
+        from worker import diagnostics
+        diag = diagnostics.get_all_diagnostics()
+        self.assertIn("python_version", diag)
+        self.assertIn("ytdlp_version", diag)
+        self.assertIn("ytdlp_ejs_version", diag)
+        self.assertIn("ffmpeg_version", diag)
+        self.assertIn("cookies_configured", diag)
+        self.assertIsInstance(diag["cookies_configured"], bool)
+
+        # Verify sanitize_diagnostic_text redacts secrets
+        raw = "Error in /tmp/jobs/xyz/.job_cookies.txt token=SECRET_TOKEN Bearer ABC_123"
+        sanitized = diagnostics.sanitize_diagnostic_text(raw)
+        self.assertNotIn(".job_cookies.txt", sanitized)
+        self.assertNotIn("SECRET_TOKEN", sanitized)
+        self.assertNotIn("ABC_123", sanitized)
+        self.assertIn("[REDACTED_COOKIE_PATH]", sanitized)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 

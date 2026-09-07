@@ -125,13 +125,15 @@ def start_health_server(port: int):
         logger.error(f"Failed to start health server: {e}")
 
 def main():
+    from worker import diagnostics
+    diagnostics.verify_startup_diagnostics(fail_on_missing_runtime=(os.name != "nt"))
+
     logger.info("=" * 60)
-    import yt_dlp
-    logger.info(f"yt-dlp Engine Version: {getattr(yt_dlp, '__version__', 'unknown')}")
     logger.info(f"Worker Concurrency Limit: {config.WORKER_CONCURRENCY}")
     logger.info(f"Max Clip Duration: {config.MAX_CLIP_DURATION_SECONDS}s")
     logger.info(f"Clip Expiration: {config.CLIP_EXPIRATION_HOURS} hour(s)")
     logger.info(f"FFmpeg Binary: {config.FFMPEG_EXE}")
+    logger.info(f"FFprobe Binary: {config.FFPROBE_EXE}")
     logger.info(f"Database Configured: {'YES' if config.DATABASE_URL else 'NO (DATABASE_URL missing)'}")
     logger.info(f"Redis TCP Configured: {'YES' if config.REDIS_URL else 'NO (REDIS_URL missing)'}")
     logger.info(f"Upstash REST Configured: {'YES' if (config.UPSTASH_REST_URL and config.UPSTASH_REST_TOKEN) else 'NO'}")

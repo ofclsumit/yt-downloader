@@ -17,19 +17,37 @@ import yt_dlp
 from worker import config
 from worker import db
 from worker import storage
+from worker import diagnostics
 
 logger = logging.getLogger("worker.processor")
 
+class YtDlpDiagnosticLogger:
+    """Captures yt-dlp stderr, stdout, warnings, and errors for sanitized diagnostic reporting."""
+    def __init__(self):
+        self.stderr_lines = []
+        self.stdout_lines = []
+
+    def debug(self, msg):
+        self.stdout_lines.append(str(msg))
+
+    def info(self, msg):
+        self.stdout_lines.append(str(msg))
+
+    def warning(self, msg):
+        self.stderr_lines.append(f"WARNING: {msg}")
+
+    def error(self, msg):
+        self.stderr_lines.append(f"ERROR: {msg}")
+
+    def get_stderr(self) -> str:
+        return "\n".join(self.stderr_lines)
+
+    def get_stdout(self) -> str:
+        return "\n".join(self.stdout_lines)
+
 def sanitize_log_message(msg: str) -> str:
     """Redacts any sensitive paths, cookie file references, or tokens from log messages."""
-    if not msg:
-        return ""
-    sanitized = re.sub(r'[\w/\\.:-]*\.job_cookies\.txt', '[REDACTED_COOKIE_PATH]', str(msg))
-    sanitized = re.sub(r'[\w/\\.:-]*yt_cookie_[\w.-]*\.txt', '[REDACTED_COOKIE_PATH]', sanitized)
-    sanitized = re.sub(r'--cookie(?:file)?\s+[^\s]+', '--cookie [REDACTED_COOKIE_PATH]', sanitized)
-    sanitized = re.sub(r'(po_token=)[^\s&]+', r'\1[REDACTED]', sanitized)
-    sanitized = re.sub(r'(token=)[^\s&]+', r'\1[REDACTED]', sanitized)
-    return sanitized
+    return diagnostics.sanitize_diagnostic_text(msg)
 
 @contextmanager
 def scoped_cookie_file(target_dir: Optional[Path] = None):
@@ -74,12 +92,81 @@ class MediaProcessingError(Exception):
 
 def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
     """
-    Maps raw yt-dlp error output into user-friendly error codes and messages.
-    Strictly categorizes YouTube bot detection as BOT_DETECTION without generic fallback.
+    Classifies raw yt-dlp error output into standardized error codes:
+    - JS_RUNTIME_MISSING
+    - EJS_MISSING
+    - COOKIE_INVALID
+    - COOKIE_EXPIRED
+    - BOT_DETECTION
+    - VIDEO_AGE_RESTRICTED
+    - VIDEO_PRIVATE
+    - VIDEO_REGION_RESTRICTED
+    - VIDEO_UNAVAILABLE
+    - FORMAT_ERROR
+    - NETWORK_ERROR
+    - YTDLP_ERROR
+    - UNKNOWN_ERROR
     """
-    lower_err = err_str.lower()
-    
-    # 1. YouTube Bot Detection (Immediate rejection, no retry)
+    lower = err_str.lower()
+
+    # 1. JS Runtime Missing
+    if any(k in lower for k in [
+        "no supported javascript runtime could be found",
+        "js runtime missing",
+        "no supported js runtime",
+        "supported_js_runtimes",
+        "install a supported js runtime",
+        "javascript runtime is required",
+        "runtime could be found",
+    ]):
+        return (
+            "JS_RUNTIME_MISSING",
+            "JavaScript runtime (Deno/Node.js) is missing on the worker. Administrator must verify runtime."
+        )
+
+    # 2. EJS Component Missing
+    if any(k in lower for k in [
+        "yt-dlp-ejs is required",
+        "missing ejs",
+        "ejs not found",
+        "no ejs component",
+        "install yt-dlp-ejs",
+        "ejs provider",
+    ]):
+        return (
+            "EJS_MISSING",
+            "YouTube challenge solver component (yt-dlp-ejs) is missing. Administrator must install yt-dlp-ejs."
+        )
+
+    # 3. Cookies Invalid
+    if any(k in lower for k in [
+        "could not parse cookies",
+        "cookie is invalid",
+        "invalid cookie",
+        "malformed cookie",
+        "cookies cannot be parsed",
+        "cookie format",
+    ]):
+        return (
+            "COOKIE_INVALID",
+            "The configured YouTube cookie session is invalid or malformed. Please verify cookies.txt format."
+        )
+
+    # 4. Cookies Expired
+    if any(k in lower for k in [
+        "cookie has expired",
+        "expired cookie",
+        "login expired",
+        "session expired",
+        "account suspended",
+        "re-authenticate",
+    ]):
+        return (
+            "COOKIE_EXPIRED",
+            "The YouTube cookie session has expired. Please re-export active cookies from your browser."
+        )
+
+    # 5. YouTube Bot Detection
     bot_triggers = [
         "sign in to confirm you’re not a bot",
         "sign in to confirm you're not a bot",
@@ -87,41 +174,127 @@ def classify_ytdlp_error(err_str: str) -> Tuple[str, str]:
         "captcha",
         "bot verification",
         "login_required",
+        "automated requests",
     ]
-    if any(t in lower_err for t in bot_triggers):
+    if any(t in lower for t in bot_triggers):
         return (
             "BOT_DETECTION",
             "YouTube is currently blocking automated requests from the processing server. The administrator needs to configure a valid yt-dlp cookie session."
         )
 
-    # 2. Availability & Permissions
-    if "private video" in lower_err:
-        return "VIDEO_PRIVATE", "This video is private and cannot be processed."
-    if "sign in to confirm your age" in lower_err or "age-restricted" in lower_err:
-        return "AGE_RESTRICTED", "This video is age-restricted and requires authorization."
-    if "not available in your country" in lower_err or "geo-restricted" in lower_err:
-        return "REGION_RESTRICTED", "This video is not available in the worker's region."
-    if "video unavailable" in lower_err or "this video does not exist" in lower_err:
-        return "VIDEO_UNAVAILABLE", "This video is unavailable or has been removed."
-    if "not a valid url" in lower_err or "unsupported url" in lower_err:
-        return "INVALID_URL", "The provided link is not a valid or supported YouTube URL."
-    if "too many requests" in lower_err or "429" in lower_err:
-        return "DOWNLOAD_FAILED", "YouTube is temporarily throttling requests. Please try again shortly."
-    if "requested format is not available" in lower_err:
-        return "DOWNLOAD_FAILED", "Requested video format stream is not available from YouTube."
-    
-    return "DOWNLOAD_FAILED", f"Media extraction failed: {sanitize_log_message(err_str[:200])}"
+    # 6. Age Restricted
+    if any(k in lower for k in [
+        "sign in to confirm your age",
+        "age-restricted",
+        "requires age verification",
+        "content warning",
+    ]):
+        return (
+            "VIDEO_AGE_RESTRICTED",
+            "This video is age-restricted and requires account verification."
+        )
 
-def extract_video_metadata(url: str, job_dir: Optional[Path] = None) -> Dict[str, Any]:
-    """Fetches video metadata using yt-dlp with secure scoped cookie lifecycle."""
+    # 7. Private Video
+    if any(k in lower for k in [
+        "private video",
+        "sign in if you've been granted access",
+        "this is a private video",
+    ]):
+        return (
+            "VIDEO_PRIVATE",
+            "This video is private and cannot be processed."
+        )
+
+    # 8. Region / Geo Restricted
+    if any(k in lower for k in [
+        "not available in your country",
+        "geo-restricted",
+        "geographically restricted",
+        "who has blocked it in your country",
+        "country restrictions",
+    ]):
+        return (
+            "VIDEO_REGION_RESTRICTED",
+            "This video is geographically restricted and unavailable in the processing region."
+        )
+
+    # 9. Video Unavailable / Deleted
+    if any(k in lower for k in [
+        "video unavailable",
+        "this video does not exist",
+        "video has been removed",
+        "deleted video",
+        "no longer available",
+    ]):
+        return (
+            "VIDEO_UNAVAILABLE",
+            "This video is unavailable or has been removed."
+        )
+
+    # 10. Format Error
+    if any(k in lower for k in [
+        "requested format is not available",
+        "the page needs to be reloaded",
+        "no matching formats",
+        "format not found",
+        "unplayable",
+    ]):
+        return (
+            "FORMAT_ERROR",
+            "Requested video format stream is not available from YouTube."
+        )
+
+    # 11. Network Error / Rate Limit
+    if any(k in lower for k in [
+        "too many requests",
+        "http error 429",
+        "connection refused",
+        "timed out",
+        "timeout",
+        "network is unreachable",
+        "temporary failure in name resolution",
+        "unable to download webpage",
+        "connection reset",
+        "http error 50",
+    ]):
+        return (
+            "NETWORK_ERROR",
+            "Network or rate-limit error communicating with YouTube. Please try again shortly."
+        )
+
+    # 12. Generic yt-dlp error
+    if "error:" in lower or "yt_dlp" in lower or "ytdlp" in lower:
+        return (
+            "YTDLP_ERROR",
+            f"Failed to extract video data from YouTube: {sanitize_log_message(err_str[:200])}"
+        )
+
+    return (
+        "UNKNOWN_ERROR",
+        f"Media extraction failed: {sanitize_log_message(err_str[:200])}"
+    )
+
+def extract_video_metadata(
+    url: str,
+    job_dir: Optional[Path] = None,
+    job_id: str = "diagnostic"
+) -> Dict[str, Any]:
+    """
+    Fetches video metadata using yt-dlp with secure scoped cookie lifecycle.
+    Equivalent to: yt-dlp --dump-single-json "<URL>".
+    Does NOT download video data.
+    Captures stderr and stdout for comprehensive diagnostics on failure.
+    """
+    diag_logger = YtDlpDiagnosticLogger()
     with scoped_cookie_file(job_dir) as cookie_file:
         ydl_opts = {
             'skip_download': True,
             'extract_flat': False,
-            'quiet': True,
-            'no_warnings': True,
+            'quiet': False,
+            'logger': diag_logger,
+            'no_warnings': False,
             'format': 'bv*+ba/b',
-            'js_runtimes': {'node': {}, 'deno': {}},
+            'js_runtimes': {'deno': {}, 'node': {}},
             'remote_components': ['ejs:github'],
             'extractor_args': {
                 'youtube': {
@@ -142,29 +315,32 @@ def extract_video_metadata(url: str, job_dir: Optional[Path] = None) -> Dict[str
                 if not info:
                     raise MediaProcessingError("VIDEO_UNAVAILABLE", "Unable to extract video information.")
                 return info
-        except yt_dlp.utils.DownloadError as e:
-            code, msg = classify_ytdlp_error(str(e))
-            # Immediate fail on BOT_DETECTION without retrying
-            if code == "BOT_DETECTION":
-                logger.error("YouTube bot detection encountered. Aborting immediately without retry.")
-                raise MediaProcessingError("BOT_DETECTION", msg)
-
-            # Fallback with mobile/alternate client if transient failure
-            try:
-                ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'visionos']}}
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl_fb:
-                    info = ydl_fb.extract_info(url, download=False)
-                    if info:
-                        return info
-            except Exception:
-                pass
-            raise MediaProcessingError(code, msg)
         except Exception as e:
-            if isinstance(e, MediaProcessingError):
-                raise
-            clean_err = sanitize_log_message(str(e))
-            logger.error(f"Unexpected error extracting metadata: {clean_err}", exc_info=True)
-            raise MediaProcessingError("DOWNLOAD_FAILED", f"Failed to retrieve video metadata: {clean_err[:150]}")
+            full_stderr = diag_logger.get_stderr()
+            combined_err = f"{e}\n{full_stderr}".strip()
+            code, msg = classify_ytdlp_error(combined_err)
+
+            # Check if fallback client succeeds
+            if code not in ("BOT_DETECTION", "COOKIE_INVALID", "COOKIE_EXPIRED", "JS_RUNTIME_MISSING", "EJS_MISSING"):
+                try:
+                    ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'visionos']}}
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl_fb:
+                        info = ydl_fb.extract_info(url, download=False)
+                        if info:
+                            return info
+                except Exception:
+                    pass
+
+            diagnostics.log_job_failure_diagnostics(
+                job_id=job_id,
+                stage="METADATA_EXTRACTION",
+                classification=code,
+                raw_error=e,
+                raw_stderr=full_stderr,
+                raw_stdout=diag_logger.get_stdout(),
+                exit_code=getattr(e, "code", None)
+            )
+            raise MediaProcessingError(code, msg)
 
 def run_ffmpeg_trim(
     input_file: str,
@@ -268,11 +444,11 @@ def process_job(job_data: Dict[str, Any]) -> None:
             )
 
         db.update_job_progress(job_id, 20)
-        logger.info(f"[JOB {job_id}] Fetching metadata...")
-        info = extract_video_metadata(url, job_dir=job_dir)
+        logger.info(f"[JOB {job_id}] Fetching metadata (pre-flight check)...")
+        info = extract_video_metadata(url, job_dir=job_dir, job_id=job_id)
         video_duration = float(info.get("duration") or 0)
         title = info.get("title") or "YouTube Clip"
-        logger.info(f"[JOB {job_id}] Video title: '{title}', duration: {video_duration}s")
+        logger.info(f"[JOB {job_id}] Metadata extraction SUCCESS: '{title}' ({video_duration}s)")
 
         if video_duration > 0:
             if start_sec >= video_duration:
@@ -294,14 +470,16 @@ def process_job(job_data: Dict[str, Any]) -> None:
                     db.update_job_progress(job_id, min(70, 40 + pct))
 
         with scoped_cookie_file(job_dir) as cookie_file:
+            dl_logger = YtDlpDiagnosticLogger()
             ydl_opts = {
                 'format': 'bv*+ba/b',
                 'outtmpl': raw_download_template,
                 'merge_output_format': 'mp4',
                 'progress_hooks': [progress_hook],
-                'quiet': True,
-                'no_warnings': True,
-                'js_runtimes': {'node': {}, 'deno': {}},
+                'quiet': False,
+                'logger': dl_logger,
+                'no_warnings': False,
+                'js_runtimes': {'deno': {}, 'node': {}},
                 'remote_components': ['ejs:github'],
                 'extractor_args': {
                     'youtube': {
@@ -324,11 +502,23 @@ def process_job(job_data: Dict[str, Any]) -> None:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
             except Exception as dl_err:
-                code, msg = classify_ytdlp_error(str(dl_err))
-                # Immediate exit on BOT_DETECTION without retrying
-                if code == "BOT_DETECTION":
-                    logger.error(f"[JOB {job_id}] YouTube bot verification triggered. Failing immediately without retry.")
-                    raise MediaProcessingError("BOT_DETECTION", msg)
+                full_stderr = dl_logger.get_stderr()
+                combined_err = f"{dl_err}\n{full_stderr}".strip()
+                code, msg = classify_ytdlp_error(combined_err)
+
+                diagnostics.log_job_failure_diagnostics(
+                    job_id=job_id,
+                    stage="MEDIA_DOWNLOAD",
+                    classification=code,
+                    raw_error=dl_err,
+                    raw_stderr=full_stderr,
+                    raw_stdout=dl_logger.get_stdout(),
+                    exit_code=getattr(dl_err, "code", None)
+                )
+
+                if code in ("BOT_DETECTION", "COOKIE_EXPIRED", "COOKIE_INVALID", "JS_RUNTIME_MISSING", "EJS_MISSING"):
+                    logger.error(f"[JOB {job_id}] Unrecoverable error ({code}). Failing immediately without retry.")
+                    raise MediaProcessingError(code, msg)
 
                 clean_err = sanitize_log_message(str(dl_err))
                 logger.warning(f"[JOB {job_id}] Primary section download error: {clean_err}. Retrying with universal fallback format...")
@@ -342,7 +532,17 @@ def process_job(job_data: Dict[str, Any]) -> None:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])
                 except Exception as retry_err:
-                    r_code, r_msg = classify_ytdlp_error(str(retry_err))
+                    retry_stderr = dl_logger.get_stderr()
+                    r_code, r_msg = classify_ytdlp_error(f"{retry_err}\n{retry_stderr}".strip())
+                    diagnostics.log_job_failure_diagnostics(
+                        job_id=job_id,
+                        stage="MEDIA_DOWNLOAD_RETRY",
+                        classification=r_code,
+                        raw_error=retry_err,
+                        raw_stderr=retry_stderr,
+                        raw_stdout=dl_logger.get_stdout(),
+                        exit_code=getattr(retry_err, "code", None)
+                    )
                     raise MediaProcessingError(r_code, r_msg)
 
         # Locate downloaded raw file

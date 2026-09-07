@@ -234,6 +234,24 @@ def find_ffmpeg() -> str:
 FFMPEG_EXE = find_ffmpeg()
 FFMPEG_DIR = os.path.dirname(FFMPEG_EXE) if os.path.isabs(FFMPEG_EXE) else ""
 
+def find_ffprobe() -> str:
+    env_ffprobe = os.environ.get("FFPROBE_PATH")
+    if env_ffprobe and os.path.exists(env_ffprobe):
+        return env_ffprobe
+    which_ffprobe = shutil.which("ffprobe") or shutil.which("ffprobe.exe")
+    if which_ffprobe:
+        return which_ffprobe
+    if FFMPEG_DIR:
+        sibling = Path(FFMPEG_DIR) / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
+        if sibling.exists():
+            return str(sibling)
+    bundled = BASE_DIR / "node_modules" / "ffprobe-static" / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
+    if bundled.exists():
+        return str(bundled)
+    return "ffprobe"
+
+FFPROBE_EXE = find_ffprobe()
+
 # Ensure FFmpeg directory is in PATH for yt-dlp
 if FFMPEG_DIR and FFMPEG_DIR not in os.environ.get("PATH", ""):
     os.environ["PATH"] = FFMPEG_DIR + os.pathsep + os.environ.get("PATH", "")
