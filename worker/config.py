@@ -32,8 +32,14 @@ def clean_env(key: str, default: str = "") -> str:
         val = default
     return str(val).strip().strip('"').strip("'")
 
-# Database
-DATABASE_URL = clean_env("DATABASE_URL")
+# Database (with fallback aliases)
+DATABASE_URL = (
+    clean_env("DATABASE_URL")
+    or clean_env("POSTGRES_URL")
+    or clean_env("POSTGRESQL_URL")
+    or clean_env("NEON_DATABASE_URL")
+    or clean_env("POSTGRES_PRISMA_URL")
+)
 
 # Redis Queue
 REDIS_URL = clean_env("UPSTASH_REDIS_URL") or clean_env("REDIS_URL")
