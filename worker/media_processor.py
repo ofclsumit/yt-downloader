@@ -4,6 +4,7 @@ Implements yt-dlp section-aware downloading and FFmpeg frame-accurate trimming.
 """
 import os
 import re
+import json
 import shutil
 import logging
 import tempfile
@@ -20,6 +21,114 @@ from worker import storage
 from worker import diagnostics
 
 logger = logging.getLogger("worker.processor")
+
+CLIENT_STRATEGIES = [
+    {
+        "name": "web_embedded",
+        "player_client": ['web_embedded', 'default', '-tv_downgraded', 'android'],
+    },
+    {
+        "name": "android",
+        "player_client": ['android'],
+    },
+    {
+        "name": "ios_visionos",
+        "player_client": ['ios', 'visionos'],
+    },
+    {
+        "name": "default",
+        "player_client": ['default', '-tv_downgraded'],
+    },
+]
+
+def probe_media_file(file_path: str) -> Dict[str, Any]:
+    """
+    Independently inspects an MP4/media file using FFprobe or FFmpeg.
+    Returns:
+    {
+        "duration": float,
+        "has_video": bool,
+        "has_audio": bool,
+        "video_codec": Optional[str],
+        "audio_codec": Optional[str],
+        "container": str
+    }
+    """
+    path_obj = Path(file_path)
+    if not path_obj.exists() or path_obj.stat().st_size == 0:
+        return {
+            "duration": 0.0,
+            "has_video": False,
+            "has_audio": False,
+            "video_codec": None,
+            "audio_codec": None,
+            "container": "unknown"
+        }
+
+    # 1. Attempt ffprobe JSON output if available
+    ffprobe_bin = getattr(config, "FFPROBE_EXE", "ffprobe")
+    resolved_ffprobe = shutil.which(ffprobe_bin) or (ffprobe_bin if Path(ffprobe_bin).exists() else None)
+    if resolved_ffprobe:
+        try:
+            cmd = [
+                resolved_ffprobe,
+                "-v", "error",
+                "-show_entries", "format=duration,format_name",
+                "-show_streams",
+                "-of", "json",
+                str(file_path)
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+            if res.returncode == 0 and res.stdout:
+                data = json.loads(res.stdout)
+                streams = data.get("streams", [])
+                has_video = any(s.get("codec_type") == "video" for s in streams)
+                has_audio = any(s.get("codec_type") == "audio" for s in streams)
+                video_codec = next((s.get("codec_name") for s in streams if s.get("codec_type") == "video"), None)
+                audio_codec = next((s.get("codec_name") for s in streams if s.get("codec_type") == "audio"), None)
+                duration = float(data.get("format", {}).get("duration") or 0.0)
+                container = data.get("format", {}).get("format_name", "mp4")
+                return {
+                    "duration": duration,
+                    "has_video": has_video,
+                    "has_audio": has_audio,
+                    "video_codec": video_codec,
+                    "audio_codec": audio_codec,
+                    "container": container,
+                }
+        except Exception:
+            pass
+
+    # 2. Universal FFmpeg -i fallback parser
+    res = subprocess.run(
+        [config.FFMPEG_EXE, "-i", str(file_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=10
+    )
+    out = res.stderr or ""
+    dur = 0.0
+    dur_match = re.search(r'Duration:\s*(\d+):(\d+):(\d+\.\d+)', out)
+    if dur_match:
+        h, m, s = [float(x) for x in dur_match.groups()]
+        dur = h * 3600 + m * 60 + s
+
+    has_video = "Video:" in out
+    has_audio = "Audio:" in out
+    v_match = re.search(r'Stream #\d+:\d+.*Video:\s*(\w+)', out)
+    a_match = re.search(r'Stream #\d+:\d+.*Audio:\s*(\w+)', out)
+    video_codec = v_match.group(1) if v_match else ("h264" if has_video else None)
+    audio_codec = a_match.group(1) if a_match else ("aac" if has_audio else None)
+
+    return {
+        "duration": dur,
+        "has_video": has_video,
+        "has_audio": has_audio,
+        "video_codec": video_codec,
+        "audio_codec": audio_codec,
+        "container": "mp4",
+    }
 
 class YtDlpDiagnosticLogger:
     """Captures yt-dlp stderr, stdout, warnings, and errors for sanitized diagnostic reporting."""
@@ -343,94 +452,98 @@ def extract_video_metadata(
     job_id: str = "diagnostic"
 ) -> Dict[str, Any]:
     """
-    Fetches video metadata using yt-dlp with secure scoped cookie lifecycle.
+    Fetches video metadata using yt-dlp with controlled client fallback strategy.
     Equivalent to: yt-dlp --dump-single-json "<URL>".
     Does NOT download video data.
     Captures stderr and stdout for comprehensive diagnostics on failure.
     """
-    diag_logger = YtDlpDiagnosticLogger()
-    with scoped_cookie_file(job_dir) as cookie_file:
-        ydl_opts = {
-            'skip_download': True,
-            'extract_flat': False,
-            'quiet': False,
-            'logger': diag_logger,
-            'no_warnings': False,
-            'format': 'bv*+ba/b',
-            'js_runtimes': {'deno': {}, 'node': {}},
-            'remote_components': ['ejs:github'],
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['web_embedded', 'default', '-tv_downgraded', 'android'],
-                }
-            },
-        }
-        if config.FFMPEG_EXE:
-            ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
-        if config.YTDLP_PROXY:
-            ydl_opts['proxy'] = config.YTDLP_PROXY
-        if cookie_file:
-            ydl_opts['cookiefile'] = cookie_file
+    cookie_content = config.get_cookie_content()
+    cookie_configured = bool(config.has_cookies())
+    cookie_valid, _ = diagnostics.verify_cookie_format(cookie_content)
+    cookie_file_used = False
 
-        cookie_configured = bool(config.has_cookies())
-        raw_cookies = config.get_cookie_content()
-        cookie_valid, _ = diagnostics.verify_cookie_format(raw_cookies)
+    last_error = None
+    last_code = "UNKNOWN_ERROR"
+    last_msg = ""
+    last_stderr = ""
+    last_stdout = ""
+
+    with scoped_cookie_file(job_dir) as cookie_file:
         cookie_file_used = bool(cookie_file and os.path.exists(cookie_file))
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if not info:
-                    raise MediaProcessingError("VIDEO_UNAVAILABLE", "Unable to extract video information.")
-                logger.info(
-                    f"cookie_configured={'true' if cookie_configured else 'false'} "
-                    f"cookie_file_valid={'true' if cookie_valid else 'false'} "
-                    f"cookie_file_used={'true' if cookie_file_used else 'false'} "
-                    f"youtube_metadata_extraction=SUCCESS "
-                    f"classification=NONE"
+        for strategy in CLIENT_STRATEGIES:
+            client_name = strategy["name"]
+            player_client = strategy["player_client"]
+            diag_logger = YtDlpDiagnosticLogger()
+
+            ydl_opts = {
+                'skip_download': True,
+                'extract_flat': False,
+                'quiet': False,
+                'logger': diag_logger,
+                'no_warnings': False,
+                'format': 'bv*+ba/b',
+                'js_runtimes': {'deno': {}, 'node': {}},
+                'remote_components': ['ejs:github'],
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': player_client,
+                    }
+                },
+            }
+            if config.FFMPEG_EXE:
+                ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
+            if config.YTDLP_PROXY:
+                ydl_opts['proxy'] = config.YTDLP_PROXY
+            if cookie_file:
+                ydl_opts['cookiefile'] = cookie_file
+
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if info:
+                        info["_selected_client"] = client_name
+                        logger.info(f"[JOB {job_id}] Metadata extraction SUCCESS using client '{client_name}'.")
+                        logger.info(
+                            f"cookie_configured={'true' if cookie_configured else 'false'} "
+                            f"cookie_file_valid={'true' if cookie_valid else 'false'} "
+                            f"cookie_file_used={'true' if cookie_file_used else 'false'} "
+                            f"youtube_metadata_extraction=SUCCESS "
+                            f"classification=NONE"
+                        )
+                        return info
+            except Exception as e:
+                full_stderr = diag_logger.get_stderr()
+                combined_err = f"{e}\n{full_stderr}".strip()
+                code, msg = classify_ytdlp_error(combined_err)
+                last_error = e
+                last_code = code
+                last_msg = msg
+                last_stderr = full_stderr
+                last_stdout = diag_logger.get_stdout()
+
+                logger.warning(
+                    f"[JOB {job_id}] Client '{client_name}' extraction failed ({code}): {sanitize_log_message(str(e)[:120])}. Attempting next client..."
                 )
-                return info
-        except Exception as e:
-            full_stderr = diag_logger.get_stderr()
-            combined_err = f"{e}\n{full_stderr}".strip()
-            code, msg = classify_ytdlp_error(combined_err)
 
-            # Check if fallback client succeeds
-            if code not in ("BOT_DETECTION", "COOKIE_INVALID", "COOKIE_EXPIRED", "COOKIE_NOT_USED", "PO_TOKEN_REQUIRED", "JS_RUNTIME_MISSING", "EJS_MISSING"):
-                try:
-                    ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'visionos']}}
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl_fb:
-                        info = ydl_fb.extract_info(url, download=False)
-                        if info:
-                            logger.info(
-                                f"cookie_configured={'true' if cookie_configured else 'false'} "
-                                f"cookie_file_valid={'true' if cookie_valid else 'false'} "
-                                f"cookie_file_used={'true' if cookie_file_used else 'false'} "
-                                f"youtube_metadata_extraction=SUCCESS "
-                                f"classification=NONE"
-                            )
-                            return info
-                except Exception:
-                    pass
+        logger.info(
+            f"cookie_configured={'true' if cookie_configured else 'false'} "
+            f"cookie_file_valid={'true' if cookie_valid else 'false'} "
+            f"cookie_file_used={'true' if cookie_file_used else 'false'} "
+            f"youtube_metadata_extraction=FAILED "
+            f"classification={last_code}"
+        )
 
-            logger.info(
-                f"cookie_configured={'true' if cookie_configured else 'false'} "
-                f"cookie_file_valid={'true' if cookie_valid else 'false'} "
-                f"cookie_file_used={'true' if cookie_file_used else 'false'} "
-                f"youtube_metadata_extraction=FAILED "
-                f"classification={code}"
-            )
-
-            diagnostics.log_job_failure_diagnostics(
-                job_id=job_id,
-                stage="METADATA_EXTRACTION",
-                classification=code,
-                raw_error=e,
-                raw_stderr=full_stderr,
-                raw_stdout=diag_logger.get_stdout(),
-                exit_code=getattr(e, "code", None)
-            )
-            raise MediaProcessingError(code, msg)
+        diagnostics.log_job_failure_diagnostics(
+            job_id=job_id,
+            stage="METADATA_EXTRACTION",
+            classification=last_code,
+            raw_error=last_error,
+            raw_stderr=last_stderr,
+            raw_stdout=last_stdout,
+            exit_code=getattr(last_error, "code", None)
+        )
+        raise MediaProcessingError(last_code, last_msg)
 
 def run_ffmpeg_trim(
     input_file: str,
@@ -440,59 +553,34 @@ def run_ffmpeg_trim(
     is_pre_cut: bool = False
 ) -> None:
     """
-    Executes FFmpeg accurate trimming.
-    If is_pre_cut is True (yt-dlp downloaded only the section), the local file starts near 0.
-    Otherwise trims from start_seconds to end_seconds.
-    Attempts stream-copy first for speed, falling back to frame-accurate libx264 encoding.
+    Executes FFmpeg frame-accurate trimming and remuxing into web-compatible MP4.
+    Preserves both video and audio streams with faststart for instant playback.
     """
     duration = end_seconds - start_seconds
     trim_start = 0.0 if is_pre_cut else start_seconds
-    
-    # 1. Attempt ultra-fast stream copy if inputs allow
-    copy_cmd = [
+
+    # Frame-accurate encode with libx264 + aac for universal compatibility and faststart
+    encode_cmd = [
         config.FFMPEG_EXE,
         "-y",
-        "-ss", str(trim_start),
-        "-t", str(duration),
+        "-ss", f"{trim_start:.3f}",
+        "-t", f"{duration:.3f}",
         "-i", input_file,
-        "-c", "copy",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "22",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
         output_file
     ]
-    
-    logger.info(f"Running FFmpeg stream-copy: {' '.join(copy_cmd)}")
-    res = subprocess.run(copy_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    
-    valid_copy = (
-        res.returncode == 0
-        and os.path.exists(output_file)
-        and os.path.getsize(output_file) > 1024
-    )
-    
-    if not valid_copy:
-        logger.info("Stream-copy did not produce accurate output. Falling back to libx264 frame-accurate encode.")
-        # 2. Frame-accurate encode with fast preset and universal compatibility
-        encode_cmd = [
-            config.FFMPEG_EXE,
-            "-y",
-            "-ss", str(trim_start),
-            "-t", str(duration),
-            "-i", input_file,
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "22",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-            output_file
-        ]
-        logger.info(f"Running FFmpeg re-encode: {' '.join(encode_cmd)}")
-        res_encode = subprocess.run(encode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if res_encode.returncode != 0:
-            err_msg = res_encode.stderr[-400:] if res_encode.stderr else "Unknown FFmpeg error"
-            logger.error(f"FFmpeg encoding failed: {err_msg}")
-            raise MediaProcessingError("PROCESSING_FAILED", f"Video trimming failed: {err_msg}")
+    logger.info(f"Running FFmpeg frame-accurate trim: {' '.join(encode_cmd)}")
+    res_encode = subprocess.run(encode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if res_encode.returncode != 0:
+        err_msg = res_encode.stderr[-400:] if res_encode.stderr else "Unknown FFmpeg error"
+        logger.error(f"FFmpeg encoding failed: {err_msg}")
+        raise MediaProcessingError("PROCESSING_FAILED", f"Video trimming failed: {err_msg}")
 
     if not os.path.exists(output_file) or os.path.getsize(output_file) < 1024:
         raise MediaProcessingError("PROCESSING_FAILED", "Generated clip is empty or corrupt.")
@@ -501,10 +589,10 @@ def process_job(job_data: Dict[str, Any]) -> None:
     """
     Complete media worker processing pipeline for a single job:
     1. Validate timestamps & bounds against video duration
-    2. yt-dlp section-aware download into isolated directory
+    2. yt-dlp section-aware download with controlled client strategy
     3. FFmpeg accurate trimming & remuxing
-    4. Cloudflare R2 upload
-    5. PostgreSQL status updates & completion
+    4. Independent ffprobe/ffmpeg duration & stream verification
+    5. Cloudflare R2 upload & completion
     6. Guaranteed temporary file cleanup
     """
     job_id = job_data["id"]
@@ -538,6 +626,7 @@ def process_job(job_data: Dict[str, Any]) -> None:
         info = extract_video_metadata(url, job_dir=job_dir, job_id=job_id)
         video_duration = float(info.get("duration") or 0)
         title = info.get("title") or "YouTube Clip"
+        selected_client = info.get("_selected_client", "web_embedded")
         logger.info(f"[JOB {job_id}] Metadata extraction SUCCESS: '{title}' ({video_duration}s)")
 
         if video_duration > 0:
@@ -546,6 +635,14 @@ def process_job(job_data: Dict[str, Any]) -> None:
             if end_sec > video_duration + 1.0:  # 1s tolerance for rounding
                 end_sec = video_duration
                 requested_duration = end_sec - start_sec
+
+        # Required logs: [source] and [request]
+        logger.info("=" * 50)
+        logger.info(f"[source]\nvideo duration: {video_duration}s")
+        logger.info(
+            f"[request]\nstart_seconds: {start_sec:.2f}\nend_seconds: {end_sec:.2f}\nrequested_duration: {requested_duration:.2f}s"
+        )
+        logger.info("=" * 50)
 
         # Step 2: yt-dlp Section-Aware Download
         db.update_job_progress(job_id, 40)
@@ -559,92 +656,103 @@ def process_job(job_data: Dict[str, Any]) -> None:
                     pct = int((downloaded / total) * 30)
                     db.update_job_progress(job_id, min(70, 40 + pct))
 
+        ordered_strategies = sorted(
+            CLIENT_STRATEGIES,
+            key=lambda s: 0 if s["name"] == selected_client else 1
+        )
+        download_success = False
+        active_client = selected_client
+        last_dl_error = None
+        last_dl_code = "DOWNLOAD_FAILED"
+        last_dl_msg = ""
+        last_dl_stderr = ""
+
         with scoped_cookie_file(job_dir) as cookie_file:
-            dl_logger = YtDlpDiagnosticLogger()
-            ydl_opts = {
-                'format': 'bv*+ba/b',
-                'outtmpl': raw_download_template,
-                'merge_output_format': 'mp4',
-                'progress_hooks': [progress_hook],
-                'quiet': False,
-                'logger': dl_logger,
-                'no_warnings': False,
-                'js_runtimes': {'deno': {}, 'node': {}},
-                'remote_components': ['ejs:github'],
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['web_embedded', 'default', '-tv_downgraded', 'android'],
-                    }
-                },
-                # Documented yt-dlp section downloading function
-                'download_ranges': yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)]),
-                'force_keyframes_at_cuts': False,
-            }
-            if config.FFMPEG_EXE:
-                ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
-            if config.YTDLP_PROXY:
-                ydl_opts['proxy'] = config.YTDLP_PROXY
-            if cookie_file:
-                ydl_opts['cookiefile'] = cookie_file
-
-            is_pre_cut = True
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
-            except Exception as dl_err:
-                full_stderr = dl_logger.get_stderr()
-                combined_err = f"{dl_err}\n{full_stderr}".strip()
-                code, msg = classify_ytdlp_error(combined_err)
-
-                diagnostics.log_job_failure_diagnostics(
-                    job_id=job_id,
-                    stage="MEDIA_DOWNLOAD",
-                    classification=code,
-                    raw_error=dl_err,
-                    raw_stderr=full_stderr,
-                    raw_stdout=dl_logger.get_stdout(),
-                    exit_code=getattr(dl_err, "code", None)
-                )
-
-                if code in ("BOT_DETECTION", "COOKIE_EXPIRED", "COOKIE_INVALID", "JS_RUNTIME_MISSING", "EJS_MISSING"):
-                    logger.error(f"[JOB {job_id}] Unrecoverable error ({code}). Failing immediately without retry.")
-                    raise MediaProcessingError(code, msg)
-
-                clean_err = sanitize_log_message(str(dl_err))
-                logger.warning(f"[JOB {job_id}] Primary section download error: {clean_err}. Retrying with universal fallback format...")
-                ydl_opts['format'] = 'b/bv*+ba/best'
-                ydl_opts['extractor_args'] = {
-                    'youtube': {
-                        'player_client': ['web_embedded', 'android', 'visionos']
-                    }
+            for strategy in ordered_strategies:
+                client_name = strategy["name"]
+                player_client = strategy["player_client"]
+                dl_logger = YtDlpDiagnosticLogger()
+                ydl_opts = {
+                    'format': 'bv*[height<=1080]+ba/b/best',
+                    'outtmpl': raw_download_template,
+                    'merge_output_format': 'mp4',
+                    'progress_hooks': [progress_hook],
+                    'quiet': False,
+                    'logger': dl_logger,
+                    'no_warnings': False,
+                    'js_runtimes': {'deno': {}, 'node': {}},
+                    'remote_components': ['ejs:github'],
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': player_client,
+                        }
+                    },
+                    'download_ranges': yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)]),
+                    'force_keyframes_at_cuts': False,
                 }
+                if config.FFMPEG_EXE:
+                    ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
+                if config.YTDLP_PROXY:
+                    ydl_opts['proxy'] = config.YTDLP_PROXY
+                if cookie_file:
+                    ydl_opts['cookiefile'] = cookie_file
+
                 try:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])
-                except Exception as retry_err:
-                    retry_stderr = dl_logger.get_stderr()
-                    r_code, r_msg = classify_ytdlp_error(f"{retry_err}\n{retry_stderr}".strip())
-                    diagnostics.log_job_failure_diagnostics(
-                        job_id=job_id,
-                        stage="MEDIA_DOWNLOAD_RETRY",
-                        classification=r_code,
-                        raw_error=retry_err,
-                        raw_stderr=retry_stderr,
-                        raw_stdout=dl_logger.get_stdout(),
-                        exit_code=getattr(retry_err, "code", None)
+                    download_success = True
+                    active_client = client_name
+                    break
+                except Exception as dl_err:
+                    full_stderr = dl_logger.get_stderr()
+                    code, msg = classify_ytdlp_error(f"{dl_err}\n{full_stderr}".strip())
+                    last_dl_error = dl_err
+                    last_dl_code = code
+                    last_dl_msg = msg
+                    last_dl_stderr = full_stderr
+                    logger.warning(
+                        f"[JOB {job_id}] Download with client '{client_name}' failed ({code}). Attempting next client..."
                     )
-                    raise MediaProcessingError(r_code, r_msg)
+
+        if not download_success:
+            diagnostics.log_job_failure_diagnostics(
+                job_id=job_id,
+                stage="MEDIA_DOWNLOAD",
+                classification=last_dl_code,
+                raw_error=last_dl_error,
+                raw_stderr=last_dl_stderr,
+                raw_stdout="",
+                exit_code=getattr(last_dl_error, "code", None)
+            )
+            raise MediaProcessingError(last_dl_code, last_dl_msg)
 
         # Locate downloaded raw file
         raw_candidates = list(job_dir.glob("raw_stream.*"))
         if not raw_candidates:
             raise MediaProcessingError("DOWNLOAD_FAILED", "Downloaded media stream could not be located on disk.")
         downloaded_raw_file = str(raw_candidates[0])
-        logger.info(f"[JOB {job_id}] Download completed: {downloaded_raw_file} ({os.path.getsize(downloaded_raw_file)} bytes)")
+        downloaded_bytes = os.path.getsize(downloaded_raw_file)
 
-        # Step 3: FFmpeg Trimming & Remuxing
+        # Probe raw downloaded file
+        raw_probe = probe_media_file(downloaded_raw_file)
+        raw_duration = raw_probe["duration"]
+        video_fmt = raw_probe.get("video_codec") or "h264"
+        audio_fmt = raw_probe.get("audio_codec") or "aac"
+
+        logger.info("=" * 50)
+        logger.info(
+            f"[yt-dlp]\n"
+            f"selected client: {active_client}\n"
+            f"selected video format: {video_fmt}\n"
+            f"selected audio format: {audio_fmt}\n"
+            f"downloaded bytes: {downloaded_bytes}"
+        )
+        logger.info("=" * 50)
+
+        # Step 3: FFmpeg Precise Trimming
         db.update_job_progress(job_id, 75)
         logger.info(f"[JOB {job_id}] Running FFmpeg trimming...")
+        is_pre_cut = abs(raw_duration - requested_duration) <= 3.0
         run_ffmpeg_trim(
             input_file=downloaded_raw_file,
             output_file=final_clip_path,
@@ -653,11 +761,40 @@ def process_job(job_data: Dict[str, Any]) -> None:
             is_pre_cut=is_pre_cut
         )
         clip_size = os.path.getsize(final_clip_path)
-        logger.info(f"[JOB {job_id}] Clip created successfully: {clip_size} bytes")
 
-        # Step 4: Upload to Cloudflare R2
+        # Step 4: Validate Output Clip with independent ffprobe/ffmpeg
+        output_probe = probe_media_file(final_clip_path)
+        output_duration = output_probe["duration"]
+        codec_container = f"{output_probe.get('video_codec', 'unknown')}+{output_probe.get('audio_codec', 'unknown')}/{output_probe.get('container', 'mp4')}"
+
+        logger.info("=" * 50)
+        logger.info(
+            f"[ffmpeg]\n"
+            f"input duration: {raw_duration:.2f}s\n"
+            f"output duration: {output_duration:.2f}s\n"
+            f"codec/container: {codec_container}"
+        )
+        logger.info("=" * 50)
+
+        # Verify timestamp accuracy
+        dur_diff = abs(output_duration - requested_duration)
+        if dur_diff > 2.5:
+            raise MediaProcessingError(
+                "PROCESSING_FAILED",
+                f"Generated clip duration ({output_duration:.2f}s) differs materially from requested duration ({requested_duration:.2f}s, delta: {dur_diff:.2f}s)."
+            )
+
+        # Verify video stream exists
+        if not output_probe.get("has_video"):
+            raise MediaProcessingError("PROCESSING_FAILED", "Generated clip is missing a valid video stream.")
+
+        # Verify audio stream exists if source has audio
+        if raw_probe.get("has_audio") and not output_probe.get("has_audio"):
+            raise MediaProcessingError("PROCESSING_FAILED", "Generated clip is missing an audio stream present in source.")
+
+        # Step 5: Upload ONLY final clip to Cloudflare R2
         db.update_job_progress(job_id, 90)
-        logger.info(f"[JOB {job_id}] Uploading to Cloudflare R2...")
+        logger.info(f"[JOB {job_id}] Uploading final clip to Cloudflare R2...")
         now = datetime.now(timezone.utc)
         year_str = now.strftime("%Y")
         month_str = now.strftime("%m")
@@ -669,7 +806,15 @@ def process_job(job_data: Dict[str, Any]) -> None:
             content_type="video/mp4"
         )
 
-        # Step 5: Mark COMPLETED in PostgreSQL
+        logger.info("=" * 50)
+        logger.info(
+            f"[storage]\n"
+            f"R2 upload size: {clip_size} bytes\n"
+            f"R2 object key: {object_key}"
+        )
+        logger.info("=" * 50)
+
+        # Step 6: Mark COMPLETED in PostgreSQL
         expires_at = now + timedelta(hours=config.CLIP_EXPIRATION_HOURS)
         db.mark_job_completed(
             job_id=job_id,
@@ -689,7 +834,7 @@ def process_job(job_data: Dict[str, Any]) -> None:
         logger.error(f"[JOB {job_id}] Unexpected failure: {clean_exc}", exc_info=True)
         db.mark_job_failed(job_id, "UNKNOWN_ERROR", f"An unexpected error occurred: {clean_exc[:150]}")
     finally:
-        # Step 6: Guaranteed Cleanup of Temporary Files & Cookie Credentials
+        # Step 7: Guaranteed Cleanup of Temporary Files & Cookie Credentials
         if job_dir.exists():
             try:
                 shutil.rmtree(job_dir, ignore_errors=True)

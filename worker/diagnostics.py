@@ -131,42 +131,50 @@ def verify_cookie_format(cookie_content: Optional[str]) -> Tuple[bool, int]:
 
 def execute_metadata_probe(url: str, cookie_path: Optional[str] = None) -> Tuple[bool, str, str]:
     """
-    Executes a metadata-only extraction using yt-dlp.
+    Executes a metadata-only extraction using yt-dlp with client fallback cascade.
     Returns (success, classification_or_title, sanitized_stderr).
     """
-    from worker.media_processor import YtDlpDiagnosticLogger, classify_ytdlp_error
-    diag_logger = YtDlpDiagnosticLogger()
-    ydl_opts = {
-        'skip_download': True,
-        'extract_flat': False,
-        'quiet': False,
-        'logger': diag_logger,
-        'no_warnings': False,
-        'format': 'bv*+ba/b',
-        'js_runtimes': {'deno': {}, 'node': {}},
-        'remote_components': ['ejs:github'],
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['web_embedded', 'default', '-tv_downgraded', 'android'],
-            }
-        },
-    }
-    if config.FFMPEG_EXE:
-        ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
-    if config.YTDLP_PROXY:
-        ydl_opts['proxy'] = config.YTDLP_PROXY
-    if cookie_path and os.path.exists(cookie_path):
-        ydl_opts['cookiefile'] = cookie_path
+    from worker.media_processor import YtDlpDiagnosticLogger, classify_ytdlp_error, CLIENT_STRATEGIES
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            title = info.get("title", "Video") if info else "Video"
-            return True, title, diag_logger.get_stderr()
-    except Exception as e:
-        full_err = f"{e}\n{diag_logger.get_stderr()}".strip()
-        code, _ = classify_ytdlp_error(full_err)
-        return False, code, sanitize_diagnostic_text(full_err)
+    last_code = "UNKNOWN_ERROR"
+    last_err = ""
+
+    for strategy in CLIENT_STRATEGIES:
+        diag_logger = YtDlpDiagnosticLogger()
+        ydl_opts = {
+            'skip_download': True,
+            'extract_flat': False,
+            'quiet': False,
+            'logger': diag_logger,
+            'no_warnings': False,
+            'format': 'bv*+ba/b',
+            'js_runtimes': {'deno': {}, 'node': {}},
+            'remote_components': ['ejs:github'],
+            'extractor_args': {
+                'youtube': {
+                    'player_client': strategy['player_client'],
+                }
+            },
+        }
+        if config.FFMPEG_EXE:
+            ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
+        if config.YTDLP_PROXY:
+            ydl_opts['proxy'] = config.YTDLP_PROXY
+        if cookie_path and os.path.exists(cookie_path):
+            ydl_opts['cookiefile'] = cookie_path
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                title = info.get("title", "Video") if info else "Video"
+                return True, title, diag_logger.get_stderr()
+        except Exception as e:
+            full_err = f"{e}\n{diag_logger.get_stderr()}".strip()
+            code, _ = classify_ytdlp_error(full_err)
+            last_code = code
+            last_err = full_err
+
+    return False, last_code, sanitize_diagnostic_text(last_err)
 
 def run_environment_and_cookie_diagnostics(fail_on_missing_runtime: bool = True) -> Dict[str, Any]:
     """
