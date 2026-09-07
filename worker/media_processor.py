@@ -125,7 +125,7 @@ def extract_video_metadata(url: str, job_dir: Optional[Path] = None) -> Dict[str
             'remote_components': ['ejs:github'],
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['web', 'web_embedded', 'tv_downgraded', 'android'] if cookie_file else ['visionos', 'android', 'web'],
+                    'player_client': ['web_embedded', 'default', '-tv_downgraded', 'android'],
                 }
             },
         }
@@ -305,7 +305,7 @@ def process_job(job_data: Dict[str, Any]) -> None:
                 'remote_components': ['ejs:github'],
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['web', 'web_embedded', 'tv_downgraded', 'android'] if cookie_file else ['visionos', 'android', 'web'],
+                        'player_client': ['web_embedded', 'default', '-tv_downgraded', 'android'],
                     }
                 },
                 # Documented yt-dlp section downloading function
@@ -335,7 +335,7 @@ def process_job(job_data: Dict[str, Any]) -> None:
                 ydl_opts['format'] = 'b/bv*+ba/best'
                 ydl_opts['extractor_args'] = {
                     'youtube': {
-                        'player_client': ['web_embedded', 'web', 'android'] if cookie_file else ['android', 'visionos']
+                        'player_client': ['web_embedded', 'android', 'visionos']
                     }
                 }
                 try:
