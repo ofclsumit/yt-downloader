@@ -5,11 +5,12 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install system dependencies: FFmpeg, curl, ca-certificates
+# Install system dependencies: FFmpeg, curl, ca-certificates, and nodejs for yt-dlp JS challenges
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     ca-certificates \
     curl \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Verify FFmpeg installation
