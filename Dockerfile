@@ -27,5 +27,5 @@ COPY . /app/
 # Expose port 10000 for Render Web Service health checks (Free Tier compatibility)
 EXPOSE 10000
 
-# Run worker
-CMD ["python", "worker/worker.py"]
+# Run worker module
+CMD ["python", "-m", "worker.worker"]

@@ -26,11 +26,12 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from worker import config
-from worker import db
-from worker import storage
-from worker import cleaner
-from worker.media_processor import process_job
+try:
+    from worker import config, db, storage, cleaner
+    from worker.media_processor import process_job
+except (ImportError, ModuleNotFoundError):
+    import config, db, storage, cleaner
+    from media_processor import process_job
 
 # Optional Sentry initialization
 if config.SENTRY_DSN:
