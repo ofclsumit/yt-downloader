@@ -1,15 +1,9 @@
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
 import yt_dlp
 import time
 import os
 import re
 import uuid
 import sys
-import subprocess
 import secrets
 import threading
 from typing import Optional, Dict, Any, List
@@ -31,15 +25,44 @@ os.makedirs(TEMP_PATH, exist_ok=True)
 
 import shutil
 
-# Locate and inject ffmpeg into PATH for yt-dlp
-FFMPEG_NODE_PATH = os.path.join(BASE_DIR, "node_modules", "ffmpeg-static", "ffmpeg.exe")
-if os.path.exists(FFMPEG_NODE_PATH):
-    FFMPEG_EXE = FFMPEG_NODE_PATH
-    ffmpeg_dir = os.path.dirname(FFMPEG_NODE_PATH)
-    if ffmpeg_dir not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+# Locate, test, and verify FFmpeg on the host machine
+FFMPEG_EXE = None
+FFMPEG_AVAILABLE = False
+FFMPEG_ERROR = None
+
+# Check custom environment path first
+custom_ffmpeg = os.environ.get("FFMPEG_PATH")
+if custom_ffmpeg and os.path.exists(custom_ffmpeg):
+    FFMPEG_EXE = custom_ffmpeg
+
+# Check system PATH
+if not FFMPEG_EXE:
+    sys_ffmpeg = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    if sys_ffmpeg:
+        FFMPEG_EXE = sys_ffmpeg
+
+# Check bundled host node_modules binary
+if not FFMPEG_EXE:
+    FFMPEG_NODE_PATH = os.path.join(BASE_DIR, "node_modules", "ffmpeg-static", "ffmpeg.exe")
+    if os.path.exists(FFMPEG_NODE_PATH):
+        FFMPEG_EXE = FFMPEG_NODE_PATH
+
+# Verify executable status
+if FFMPEG_EXE:
+    try:
+        import subprocess
+        res = subprocess.run([FFMPEG_EXE, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res.returncode == 0:
+            FFMPEG_AVAILABLE = True
+            ffmpeg_dir = os.path.dirname(os.path.abspath(FFMPEG_EXE))
+            if ffmpeg_dir not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+        else:
+            FFMPEG_ERROR = f"FFmpeg found at '{FFMPEG_EXE}' but returned non-zero code on test execution."
+    except Exception as e:
+        FFMPEG_ERROR = f"Failed to execute FFmpeg at '{FFMPEG_EXE}': {e}"
 else:
-    FFMPEG_EXE = shutil.which("ffmpeg") or "ffmpeg"
+    FFMPEG_ERROR = "FFmpeg is not installed or cannot be found in system PATH. Please install FFmpeg (https://ffmpeg.org) or ensure it is available in PATH."
 
 NODE_BIN = shutil.which('node') or r"C:\Program Files\nodejs\node.exe"
 YTDLP_BASE_OPTS = {
@@ -47,7 +70,7 @@ YTDLP_BASE_OPTS = {
     'no_warnings': True,
     'extractor_args': {
         'youtube': {
-            'player_client': ['android'],
+            'player_client': ['visionos', 'android'],
         }
     },
     'js_runtimes': {'node': {'path': NODE_BIN}} if (NODE_BIN and os.path.exists(NODE_BIN)) else {},
@@ -102,21 +125,13 @@ def get_rotating_proxy() -> Optional[str]:
         return random.choice(proxies)
     return None
 
-def get_ytdlp_opts(custom_opts: dict = None, use_cookies: bool = False, proxy: str = None) -> dict:
-    """Builds yt-dlp options dictionary with proxy. Injects cookies only when explicitly requested.
-    If `proxy` is explicitly provided, that specific proxy is used (for sticky session support).
-    Otherwise, a random proxy is selected."""
+def get_ytdlp_opts(custom_opts: dict = None, use_cookies: bool = False) -> dict:
+    """Builds yt-dlp options dictionary with proxy. Injects cookies only when explicitly requested."""
     import copy
     opts = copy.deepcopy(YTDLP_BASE_OPTS)
-    selected_proxy = proxy if proxy is not None else get_rotating_proxy()
-    if selected_proxy:
-        opts["proxy"] = selected_proxy
-        os.environ["http_proxy"] = selected_proxy
-        os.environ["https_proxy"] = selected_proxy
-        os.environ["HTTP_PROXY"] = selected_proxy
-        os.environ["HTTPS_PROXY"] = selected_proxy
-    if FFMPEG_EXE and (os.path.isabs(FFMPEG_EXE) or shutil.which(FFMPEG_EXE)):
-        opts["ffmpeg_location"] = FFMPEG_EXE
+    proxy = get_rotating_proxy()
+    if proxy:
+        opts["proxy"] = proxy
     if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
         opts["cookiefile"] = COOKIES_FILE
     if PO_TOKEN_ENV:
@@ -189,26 +204,6 @@ def start_background_cleanup_daemon():
     t = threading.Thread(target=run_loop, daemon=True)
     t.start()
 
-
-
-def setup_chrome_driver():
-    """Setup Chrome with basic options"""
-    chrome_options = Options()
-
-    # Suppress DevTools logging
-    chrome_options.add_experimental_option(
-        'excludeSwitches', ['enable-logging'])
-
-    # Add additional options to improve stability
-    chrome_options.add_argument('--disable-gpu')
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument("--disable-notifications")
-
-    # Uncomment below line if you don't want to see the browser
-    # chrome_options.add_argument("--headless")
-
-    return webdriver.Chrome(options=chrome_options)
 
 
 def determine_category(title):
@@ -450,11 +445,18 @@ def download_channel_videos(channel_url, download_path, start_from=0):
 # ---------------------------------------------------------
 app = FastAPI(title="YouTube Video & Clip Downloader", version="1.0.0")
 
+LOCAL_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=LOCAL_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -522,6 +524,29 @@ class ClipJobRequest(BaseModel):
 class ChannelDownloadRequest(BaseModel):
     channel_url: str
     start_from: Optional[int] = 0
+
+
+# ---------------------------------------------------------
+# Local Health & Diagnostics Endpoints
+# ---------------------------------------------------------
+
+@app.get("/api/health")
+def api_health():
+    """Host-machine health check endpoint returning service status, FFmpeg availability, and concurrency limits."""
+    return {
+        "status": "ok",
+        "service": "youtube-video-downloader-local",
+        "mode": "host-only",
+        "ffmpeg": {
+            "available": FFMPEG_AVAILABLE,
+            "path": FFMPEG_EXE,
+            "error": FFMPEG_ERROR if not FFMPEG_AVAILABLE else None
+        },
+        "concurrencyLimit": MAX_CONCURRENT_DOWNLOADS,
+        "retentionMinutes": FILE_RETENTION_MINUTES,
+        "activeSessions": len(sessions),
+        "activeJobs": len([j for j in jobs.values() if j.get("status") == "processing"])
+    }
 
 
 # ---------------------------------------------------------
@@ -653,9 +678,8 @@ def api_session_activity(
                 content={"status": "expired", "message": "This video session is no longer active."}
             )
 
-        # Meaningful user activity extends the 5-minute session timer
         session["last_activity_at"] = now
-        session["expires_at"] = now + SESSION_EXPIRATION_SECONDS
+        # Do not extend expires_at: session has a fixed expiration window from creation
 
         if req.timestamps:
             session["timestamps"] = req.timestamps
@@ -664,13 +688,13 @@ def api_session_activity(
         if req.format:
             session["format"] = req.format
 
-        remaining = int(session["expires_at"] - now)
+        remaining = max(0, int(session["expires_at"] - now))
 
     return {
         "status": "active",
         "sessionId": session_id,
         "remainingSeconds": remaining,
-        "expiresAt": now + SESSION_EXPIRATION_SECONDS
+        "expiresAt": session["expires_at"]
     }
 
 
@@ -684,9 +708,9 @@ def api_session_close(
     job_id = req.jobId if req else None
 
     with SESSION_LOCK:
-        session = sessions.get(session_id)
+        session = sessions.pop(session_id, None)
         if session:
-            if token and token != session["token"]:
+            if token and token != session.get("token"):
                 raise HTTPException(status_code=403, detail="Unauthorized")
             session["status"] = "closed"
             session["is_processing"] = False
@@ -695,162 +719,24 @@ def api_session_close(
     if job_id and job_id in jobs:
         jobs[job_id]["status"] = "cancelled"
 
-    print(f"[Session Closed] ID: {session_id}")
+    print(f"[Session Closed & Destroyed] ID: {session_id}")
     return {"status": "closed", "sessionId": session_id}
 
 
 @app.get("/api/health")
 def api_health():
     return {
-        "status": "healthy",
-        "version": "1.2.0",
+        "status": "healthy" if FFMPEG_AVAILABLE else "degraded",
+        "version": "1.1.0",
         "engine": "youtube.py",
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_ENV or os.path.exists(PROXIES_FILE)),
-        "ffmpeg": FFMPEG_EXE,
-        "ffmpeg_available": os.path.exists(FFMPEG_EXE) if os.path.isabs(FFMPEG_EXE) else True,
+        "ffmpeg": FFMPEG_EXE if FFMPEG_AVAILABLE else None,
+        "ffmpeg_available": FFMPEG_AVAILABLE,
+        "ffmpeg_error": FFMPEG_ERROR if not FFMPEG_AVAILABLE else None,
         "active_jobs": len([j for j in jobs.values() if j.get("status") in ["queued", "processing"]]),
         "channel_scraping_active": channel_status["is_running"]
     }
-
-
-@app.get("/api/debug/test-clip")
-def api_test_clip(url: str = "https://www.youtube.com/watch?v=aqz-KE-bpKQ", start: float = 5.0, end: float = 10.0):
-    import uuid
-    test_id = f"debug_clip_{uuid.uuid4().hex[:8]}"
-    test_data = {
-        "url": url,
-        "start": start,
-        "end": end,
-        "quality": "720",
-        "format": "mp4",
-        "isClip": True,
-        "title": "Debug Clip"
-    }
-    jobs[test_id] = {"status": "queued", "progress": 0, "step": "Queued"}
-    process_download_job(test_id, test_data)
-    result = jobs.get(test_id, {})
-    file_path = result.get("filePath")
-    file_size = os.path.getsize(file_path) if file_path and os.path.exists(file_path) else 0
-    return {
-        "jobId": test_id,
-        "status": result.get("status"),
-        "error": result.get("error"),
-        "filePath": file_path,
-        "fileSize": file_size,
-        "step": result.get("step")
-    }
-
-
-@app.get("/api/debug/test-ffmpeg-proxy")
-def api_test_ffmpeg_proxy():
-    proxy = get_rotating_proxy()
-    env = os.environ.copy()
-    if proxy:
-        env["http_proxy"] = proxy
-        env["https_proxy"] = proxy
-        env["HTTP_PROXY"] = proxy
-        env["HTTPS_PROXY"] = proxy
-    
-    cmd = [FFMPEG_EXE, "-y", "-v", "debug", "-i", "https://ipv4.webshare.io/", "-f", "null", "-"]
-    res = subprocess.run(cmd, capture_output=True, text=True, env=env)
-    return {
-        "proxy": proxy,
-        "returncode": res.returncode,
-        "stderr": res.stderr[-1000:]
-    }
-
-
-@app.get("/api/debug/test-direct")
-def api_test_direct():
-    opts = {
-        'quiet': True,
-        'skip_download': True,
-        'extractor_args': {'youtube': {'player_client': ['android']}}
-    }
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info("https://www.youtube.com/watch?v=aqz-KE-bpKQ", download=False)
-            return {"success": True, "title": info.get("title"), "formats": len(info.get("formats", []))}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-@app.get("/api/debug/test-clients")
-def api_test_clients(url: str = "https://www.youtube.com/watch?v=aqz-KE-bpKQ"):
-    clients_to_test = [
-        ["tv_embedded"],
-        ["android_embedded"],
-        ["android_creator"],
-        ["android"],
-        ["tv"],
-        ["ios"],
-        ["web"]
-    ]
-    results = {}
-    for c in clients_to_test:
-        name = "+".join(c)
-        try:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'skip_download': True,
-                'extract_flat': False,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': c,
-                    }
-                }
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                fmts = [f for f in info.get("formats", []) if f.get("vcodec") != "none"]
-                results[name] = {"success": True, "formats": len(fmts), "resolutions": sorted(list(set([f.get("height") for f in fmts if f.get("height")])))[:5]}
-        except Exception as e:
-            results[name] = {"success": False, "error": str(e)[:150]}
-    return results
-
-
-@app.get("/api/debug/test-cookies")
-def api_test_cookies(url: str = "https://www.youtube.com/watch?v=aqz-KE-bpKQ"):
-    cookie_exists = os.path.exists(COOKIES_FILE)
-    cookie_size = os.path.getsize(COOKIES_FILE) if cookie_exists else 0
-    first_line = ""
-    if cookie_exists:
-        try:
-            with open(COOKIES_FILE, "r", encoding="utf-8") as f:
-                first_line = f.readline().strip()
-        except Exception as e:
-            first_line = f"Error reading: {e}"
-
-    # Test extraction with cookies directly
-    ydl_opts = get_ytdlp_opts({
-        'quiet': True,
-        'no_warnings': True,
-        'skip_download': True,
-        'extract_flat': False,
-    })
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            formats = [f for f in info.get("formats", []) if f.get("vcodec") != "none"]
-            return {
-                "success": True,
-                "title": info.get("title"),
-                "cookie_file_exists": cookie_exists,
-                "cookie_size_bytes": cookie_size,
-                "first_line_preview": first_line[:50],
-                "formats_count": len(formats),
-                "resolutions": sorted(list(set([f.get("height") for f in formats if f.get("height")])))
-            }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "cookie_file_exists": cookie_exists,
-            "cookie_size_bytes": cookie_size,
-            "first_line_preview": first_line[:50]
-        }
 
 
 @app.post("/api/analyze")
@@ -1101,11 +987,7 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
             job["progress"] = 10
             job["step"] = "Worker slot allocated. Preparing download..."
 
-            # Pin a single proxy for this entire job to ensure the same IP is used
-            # for both metadata extraction and media download (prevents YouTube CDN 403s)
-            job_proxy = get_rotating_proxy()
-
-            # Extract info with pinned proxy for session IP consistency
+            # Extract info with rotating proxy if enabled
             title = req_data.get("title")
             if not title:
                 ydl_info_opts = get_ytdlp_opts({
@@ -1113,7 +995,7 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                     'skip_download': True,
                     'quiet': True,
                     'no_warnings': True,
-                }, proxy=job_proxy)
+                })
                 if FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
                     ydl_info_opts['ffmpeg_location'] = FFMPEG_EXE
 
@@ -1142,10 +1024,7 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                     if total > 0:
                         pct = int((downloaded / total) * 60)
                         job["progress"] = min(88, 30 + pct)
-                    if use_section_download:
-                        job["step"] = f"Downloading clip segment ({int(start_time)}s - {int(end_time)}s)..."
-                    else:
-                        job["step"] = "Downloading media stream..."
+                    job["step"] = "Downloading media stream..."
                 elif d['status'] == 'finished':
                     job["progress"] = 90
                     job["step"] = "Muxing and finalizing media..."
@@ -1166,84 +1045,39 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                 except Exception:
                     ydl_format = 'bestvideo+bestaudio/best'
 
-            use_section_download = is_clip and end_time > start_time
             temp_video_pattern = os.path.join(TEMP_PATH, f"{job_id}_raw.%(ext)s")
             ffmpeg_dir = os.path.dirname(FFMPEG_EXE) if FFMPEG_EXE and os.path.isabs(FFMPEG_EXE) else None
             ydl_opts = get_ytdlp_opts({
                 'format': ydl_format,
                 'outtmpl': temp_video_pattern,
-                'merge_output_format': 'mp4' if (not is_audio and not use_section_download) else None,
-                'postprocessors': postprocessors if not use_section_download else [],
+                'merge_output_format': 'mp4' if not is_audio else None,
+                'postprocessors': postprocessors,
                 'progress_hooks': [ydl_progress_hook],
-            }, proxy=job_proxy)
+            })
             if ffmpeg_dir and os.path.exists(ffmpeg_dir):
                 ydl_opts['ffmpeg_location'] = ffmpeg_dir
             elif FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
                 ydl_opts['ffmpeg_location'] = FFMPEG_EXE
 
+            use_section_download = is_clip and end_time > start_time
             if use_section_download:
                 ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(start_time, end_time)])
                 ydl_opts['force_keyframes_at_cuts'] = False
-
-            class YTDLPLogger:
-                def __init__(self):
-                    self.messages = []
-                def debug(self, msg):
-                    self.messages.append(str(msg))
-                def warning(self, msg):
-                    self.messages.append(str(msg))
-                def error(self, msg):
-                    self.messages.append(str(msg))
-
-            ydl_logger = YTDLPLogger()
-            ydl_opts['logger'] = ydl_logger
-            ydl_opts['quiet'] = False
-            ydl_opts['verbose'] = True
 
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
             except Exception as dl_err:
-                log_excerpt = " ; ".join([m for m in ydl_logger.messages if any(k in m for k in ["ERROR", "ffmpeg", "Failed", "code", "403", "forbidden"])][-6:])
-                full_dl_err = f"{dl_err} [{log_excerpt}]" if log_excerpt else str(dl_err)
-                print(f"[Download Error] Initial download failed: {full_dl_err}. Falling back to direct segment cutting...")
+                # If specific format fails, retry with format=best while strictly preserving timestamp section download
+                print(f"[Download Error] Initial download failed: {dl_err}. Retrying with format=best...")
+                ydl_opts['format'] = 'best'
                 if use_section_download:
-                    try:
-                        ydl_info_opts = get_ytdlp_opts({'extract_flat': False, 'skip_download': True, 'quiet': True, 'no_warnings': True}, proxy=job_proxy)
-                        with yt_dlp.YoutubeDL(ydl_info_opts) as ydl_info:
-                            v_info = ydl_info.extract_info(url, download=False)
-                        fmts = v_info.get('formats', [])
-                        direct_out = os.path.join(TEMP_PATH, f"{job_id}_raw.mp4" if not is_audio else f"{job_id}_raw.mp3")
-                        if is_audio:
-                            a_cands = [f for f in fmts if f.get('acodec') != 'none' and f.get('url')]
-                            a_direct = [f for f in a_cands if 'videoplayback' in f.get('url', '')]
-                            a_f = a_direct[0] if a_direct else (a_cands[0] if a_cands else None)
-                            if not a_f:
-                                raise Exception("No audio stream URL available.")
-                            cmd = [FFMPEG_EXE, "-y", "-ss", str(start_time), "-to", str(end_time), "-i", a_f['url'], "-c:a", "libmp3lame", "-b:a", "192k", direct_out]
-                        else:
-                            h_target = int(quality) if quality.isdigit() else 1080
-                            v_cands = [f for f in fmts if f.get('vcodec') != 'none' and f.get('height') and f.get('height') <= h_target and f.get('url')]
-                            v_direct = [f for f in v_cands if 'videoplayback' in f.get('url', '')]
-                            v_f = max(v_direct, key=lambda f: f.get('height', 0)) if v_direct else (max(v_cands, key=lambda f: f.get('height', 0)) if v_cands else next((f for f in fmts if f.get('vcodec') != 'none' and f.get('url')), None))
-                            a_cands = [f for f in fmts if f.get('acodec') != 'none' and f.get('vcodec') == 'none' and f.get('url')]
-                            a_direct = [f for f in a_cands if 'videoplayback' in f.get('url', '')]
-                            a_f = a_direct[0] if a_direct else (a_cands[0] if a_cands else None)
-                            if not v_f:
-                                raise Exception("No video stream URL available.")
-                            cmd = [FFMPEG_EXE, "-y", "-ss", str(start_time), "-to", str(end_time), "-i", v_f['url']]
-                            if a_f and a_f.get('url'):
-                                cmd.extend(["-ss", str(start_time), "-to", str(end_time), "-i", a_f['url']])
-                            cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", direct_out] )
-                        
-                        job["step"] = f"Directly cutting segment ({int(start_time)}s - {int(end_time)}s)..."
-                        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                        if res.returncode != 0:
-                            raise Exception(f"Direct stream cutting failed: {res.stderr[-500:]}")
-                    except Exception as fallback_err:
-                        raise Exception(f"Clip extraction failed: {full_dl_err} | Fallback: {fallback_err}")
-                else:
-                    raise dl_err
+                    ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(start_time, end_time)])
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
+                except Exception as final_err:
+                    raise final_err
 
             # Locate downloaded media
             candidates = [os.path.join(TEMP_PATH, f) for f in os.listdir(TEMP_PATH) if f.startswith(f"{job_id}_raw")]
@@ -1254,6 +1088,7 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
             job["progress"] = 92
             job["step"] = "Finalizing video clip with FFmpeg..."
 
+            import subprocess
             if is_clip and end_time > start_time:
                 if is_audio:
                     clip_filename = f"{clean_title}_clip_{int(start_time)}s_{int(end_time)}s.mp3"
@@ -1290,21 +1125,13 @@ def process_download_job(job_id: str, req_data: Dict[str, Any]):
                             job["step"] = "Finalizing MP4 container..."
                             remux_cmd = [
                                 FFMPEG_EXE, "-y", "-i", actual_downloaded,
-                                "-c:v", "copy",
+                                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
                                 "-c:a", "aac", "-b:a", "192k",
                                 "-movflags", "+faststart", final_file_path
                             ]
                             res = subprocess.run(remux_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                            if res.returncode != 0 or not os.path.exists(final_file_path) or os.path.getsize(final_file_path) < 1024:
-                                encode_cmd = [
-                                    FFMPEG_EXE, "-y", "-i", actual_downloaded,
-                                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
-                                    "-c:a", "aac", "-b:a", "192k",
-                                    "-movflags", "+faststart", final_file_path
-                                ]
-                                res = subprocess.run(encode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                                if res.returncode != 0:
-                                    shutil.move(actual_downloaded, final_file_path)
+                            if res.returncode != 0:
+                                shutil.move(actual_downloaded, final_file_path)
                     else:
                         # Attempt ultra-fast stream copy first (sub-second completion)
                         job["progress"] = 94
@@ -1642,6 +1469,12 @@ def api_preview_media(filename: str):
     return FileResponse(file_path, media_type="video/mp4")
 
 
+# Serve built frontend assets if dist folder exists
+DIST_PATH = os.path.join(BASE_DIR, "dist")
+if os.path.exists(DIST_PATH):
+    app.mount("/", StaticFiles(directory=DIST_PATH, html=True), name="static")
+
+
 # ---------------------------------------------------------
 # CLI & Execution Entry Point
 # ---------------------------------------------------------
@@ -1678,8 +1511,28 @@ def main():
                     proxy_count += len([l for l in f if l.strip() and not l.startswith("#")])
             except Exception:
                 pass
-        server_host = os.environ.get("HOST", "0.0.0.0")
+        server_host = os.environ.get("HOST", "127.0.0.1")
         server_port = int(os.environ.get("PORT", 3001))
+
+        # Check FFmpeg status
+        if FFMPEG_AVAILABLE:
+            print(f"[FFmpeg] Host FFmpeg verified at: {FFMPEG_EXE}")
+        else:
+            print(f"[FFmpeg WARNING] {FFMPEG_ERROR}")
+
+        # Port conflict detection: prevent silently starting multiple backend instances
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            if s.connect_ex((server_host, server_port)) == 0:
+                print("\n" + "!" * 65)
+                print(f"[PORT CONFLICT ERROR] Port {server_port} is already in use on {server_host}!")
+                print("Another instance of the backend or another service is already running.")
+                print("To avoid duplicate processes, stop the running process or set PORT=<new_port>.")
+                print("!" * 65 + "\n")
+                sys.exit(1)
+
+        print(f"[Local Server] Listening privately at http://{server_host}:{server_port}")
         uvicorn.run(app, host=server_host, port=server_port, log_level="info")
 
 

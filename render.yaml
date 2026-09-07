@@ -1,0 +1,33 @@
+services:
+  - type: worker
+    name: yt-clip-media-worker
+    runtime: docker
+    dockerfilePath: worker/Dockerfile
+    plan: standard
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: UPSTASH_REDIS_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: REDIS_QUEUE_KEY
+        value: yt_clip_jobs
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        value: yt-clips
+      - key: WORKER_CONCURRENCY
+        value: "2"
+      - key: MAX_CLIP_DURATION_SECONDS
+        value: "300"
+      - key: CLIP_EXPIRATION_HOURS
+        value: "1"
+      - key: SENTRY_DSN
+        sync: false

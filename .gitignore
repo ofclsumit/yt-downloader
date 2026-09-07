@@ -6,6 +6,8 @@ node_modules/
 # Production
 dist/
 build/
+.next/
+tsconfig.tsbuildinfo
 
 # Temp storage for clips and uploads
 temp/

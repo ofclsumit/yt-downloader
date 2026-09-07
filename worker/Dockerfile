@@ -1,0 +1,31 @@
+# Dockerfile for Render Background Worker
+FROM python:3.11-slim
+
+# Prevent Python from writing .pyc files and buffer stdout/stderr
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies: FFmpeg, curl, ca-certificates
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Verify FFmpeg installation
+RUN ffmpeg -version
+
+WORKDIR /app
+
+# Install Python requirements
+COPY worker/requirements.txt /app/worker/requirements.txt
+RUN pip install --no-cache-dir -r /app/worker/requirements.txt
+
+# Copy application files
+COPY . /app/
+
+# Expose port for Render Web Service health checks (Free Tier compatibility)
+EXPOSE 10000
+
+# Run worker
+CMD ["python", "worker/worker.py"]
