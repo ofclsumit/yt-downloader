@@ -24,7 +24,9 @@ def sanitize_log_message(msg: str) -> str:
     """Redacts any sensitive paths, cookie file references, or tokens from log messages."""
     if not msg:
         return ""
-    sanitized = re.sub(r'[\w/\\.-]*cookies?[\w/\\.-]*', '[REDACTED_COOKIE_PATH]', str(msg), flags=re.IGNORECASE)
+    sanitized = re.sub(r'[\w/\\.:-]*\.job_cookies\.txt', '[REDACTED_COOKIE_PATH]', str(msg))
+    sanitized = re.sub(r'[\w/\\.:-]*yt_cookie_[\w.-]*\.txt', '[REDACTED_COOKIE_PATH]', sanitized)
+    sanitized = re.sub(r'--cookie(?:file)?\s+[^\s]+', '--cookie [REDACTED_COOKIE_PATH]', sanitized)
     sanitized = re.sub(r'(po_token=)[^\s&]+', r'\1[REDACTED]', sanitized)
     sanitized = re.sub(r'(token=)[^\s&]+', r'\1[REDACTED]', sanitized)
     return sanitized
