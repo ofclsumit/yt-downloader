@@ -55,6 +55,10 @@ CLIENT_STRATEGIES_NO_COOKIES = [
 
 CLIENT_STRATEGIES_WITH_COOKIES = [
     {
+        "name": "visionos",
+        "player_client": ['visionos'],
+    },
+    {
         "name": "web",
         "player_client": ['web', 'default'],
     },
@@ -65,10 +69,6 @@ CLIENT_STRATEGIES_WITH_COOKIES = [
     {
         "name": "mweb",
         "player_client": ['mweb'],
-    },
-    {
-        "name": "visionos",
-        "player_client": ['visionos'],
     },
     {
         "name": "tv_embedded",
@@ -515,6 +515,7 @@ def extract_video_metadata(
     with scoped_cookie_file(job_dir) as cookie_file:
         cookie_file_used = bool(cookie_file and os.path.exists(cookie_file))
         active_strategies = get_client_strategies(has_cookies=cookie_configured)
+        client_results = {}
 
         for strategy in active_strategies:
             client_name = strategy["name"]
@@ -539,7 +540,7 @@ def extract_video_metadata(
                 ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
             if config.YTDLP_PROXY:
                 ydl_opts['proxy'] = config.YTDLP_PROXY
-            if cookie_file:
+            if cookie_file and client_name not in ("visionos", "tv_embedded"):
                 ydl_opts['cookiefile'] = cookie_file
 
             try:
@@ -560,6 +561,7 @@ def extract_video_metadata(
                 full_stderr = diag_logger.get_stderr()
                 combined_err = f"{e}\n{full_stderr}".strip()
                 code, msg = classify_ytdlp_error(combined_err)
+                client_results[client_name] = f"{code}: {sanitize_log_message(str(e))[:60]}"
                 last_error = e
                 last_code = code
                 last_msg = msg
@@ -587,9 +589,8 @@ def extract_video_metadata(
             raw_stdout=last_stdout,
             exit_code=getattr(last_error, "code", None)
         )
-        clean_last_err = sanitize_log_message(str(last_error))[:150]
-        clean_stderr = sanitize_log_message(last_stderr.splitlines()[-1] if last_stderr else "")[:150]
-        debug_info = f"[Diagnostics: {config.get_secret_debug_info()}, Cookies: {config.get_cookie_source()}, Err: {clean_last_err}, StderrLast: {clean_stderr}]"
+        matrix_str = " | ".join([f"{k} -> {v}" for k, v in client_results.items()])
+        debug_info = f"[Matrix: {matrix_str} | Cookies: {config.get_cookie_source()}]"
         raise MediaProcessingError(last_code, f"{last_msg} {debug_info}")
 
 def run_ffmpeg_trim(
@@ -743,7 +744,7 @@ def process_job(job_data: Dict[str, Any]) -> None:
                     ydl_opts['ffmpeg_location'] = config.FFMPEG_EXE
                 if config.YTDLP_PROXY:
                     ydl_opts['proxy'] = config.YTDLP_PROXY
-                if cookie_file:
+                if cookie_file and client_name not in ("visionos", "tv_embedded"):
                     ydl_opts['cookiefile'] = cookie_file
 
                 try:
