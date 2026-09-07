@@ -96,21 +96,61 @@ _RAW_COOKIES = clean_env("YTDLP_COOKIES") or clean_env("YTDLP_COOKIES_B64")
 _PARSED_COOKIES = _parse_cookie_content(_RAW_COOKIES)
 _COOKIES_PATH = clean_env("YTDLP_COOKIES_PATH")
 
+DEFAULT_SECRET_PATHS = [
+    Path("/etc/secrets/cookies.txt"),
+    Path("/etc/secrets/youtube_cookies.txt"),
+    Path("/etc/secrets/YTDLP_COOKIES"),
+    BASE_DIR / "cookies.txt",
+]
+
 def get_cookie_content() -> Optional[str]:
-    """Returns the in-memory cookie content, or reads from YTDLP_COOKIES_PATH if set."""
+    """
+    Returns the in-memory cookie content.
+    Checks:
+    1. YTDLP_COOKIES / YTDLP_COOKIES_B64 environment variables
+    2. YTDLP_COOKIES_PATH custom file path
+    3. Render Secret Files mounted at /etc/secrets/cookies.txt
+    """
     if _PARSED_COOKIES:
         return _PARSED_COOKIES
+
+    # Check custom path if configured
     if _COOKIES_PATH and os.path.exists(_COOKIES_PATH):
         try:
             with open(_COOKIES_PATH, "r", encoding="utf-8", errors="ignore") as f:
-                return f.read()
+                content = f.read().strip()
+                if content:
+                    return _parse_cookie_content(content) or content
         except Exception:
-            return None
+            pass
+
+    # Check Render Secret Files paths
+    for p in DEFAULT_SECRET_PATHS:
+        if p.exists() and p.is_file():
+            try:
+                with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read().strip()
+                    if content:
+                        return _parse_cookie_content(content) or content
+            except Exception:
+                pass
+
     return None
 
 def has_cookies() -> bool:
     """Returns True if valid cookie credentials are configured."""
     return get_cookie_content() is not None
+
+def get_cookie_source() -> str:
+    """Returns a description of where cookies were loaded from (without revealing content)."""
+    if _PARSED_COOKIES:
+        return "Environment Variable"
+    if _COOKIES_PATH and os.path.exists(_COOKIES_PATH):
+        return "Custom Path (YTDLP_COOKIES_PATH)"
+    for p in DEFAULT_SECRET_PATHS:
+        if p.exists() and p.is_file():
+            return f"Secret File ({p})"
+    return "None"
 
 # Backward compatibility alias - DO NOT use for writing global files
 YTDLP_COOKIES_FILE = None

@@ -197,5 +197,28 @@ class TestBotDetectionAndCookies(unittest.TestCase):
         # Reset config
         config._PARSED_COOKIES = None
 
+    # --- TEST 10: Render Secret Files Detection ---
+    def test_case_10_render_secret_file(self):
+        config._PARSED_COOKIES = None
+        os.environ.pop("YTDLP_COOKIES", None)
+        os.environ.pop("YTDLP_COOKIES_B64", None)
+        os.environ.pop("YTDLP_COOKIES_PATH", None)
+
+        secret_file = self.test_dir / "secret_cookies.txt"
+        secret_file.write_text(SAMPLE_NETSCAPE_COOKIE, encoding="utf-8")
+
+        # Temporarily mock DEFAULT_SECRET_PATHS
+        orig_paths = config.DEFAULT_SECRET_PATHS
+        try:
+            config.DEFAULT_SECRET_PATHS = [secret_file]
+            self.assertTrue(config.has_cookies())
+            content = config.get_cookie_content()
+            self.assertIsNotNone(content)
+            self.assertIn(".youtube.com", content)
+            self.assertIn("LOGIN_INFO", content)
+        finally:
+            config.DEFAULT_SECRET_PATHS = orig_paths
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
